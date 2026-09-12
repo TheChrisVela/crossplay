@@ -4,6 +4,11 @@
 #include <Logging.h>
 #include <Memory.h>
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
 #include <cstdlib>
 
 #include "../Shelf.h"
@@ -15,6 +20,22 @@
 #include "GoMichi.h"
 #include "GoSave.h"
 #include "GoScreens.h"
+
+// How much stack michi's deepest path needs, and why it is not the loop task's.
+//
+// The search descends tree_search -> tree_descend -> expand, and from the
+// playout policy into fix_atari -> read_ladder_attack, which recurses through
+// fix_atari_r back into itself once per ply of a ladder. Upstream runs that on
+// a desktop with an eight megabyte stack; the Arduino loop task on this chip
+// gets eight KILOBYTES, and one frame of expand() alone was 8.5KB before the
+// vendored copy was trimmed.
+//
+// So the search gets a task of its own, created when the app opens and ended
+// when it closes, and the loop waits on it. scripts_local/stack_budget.py reads
+// this number and proves the deepest path the compiler can see fits inside it;
+// the ladder recursion, which the compiler cannot bound, is capped at sixteen
+// plies in michi.c for the same reason.
+#define GO_SEARCH_TASK_STACK 28672
 
 std::unique_ptr<Activity> GoActivity::create(GfxRenderer& renderer, MappedInputManager& mappedInput) {
   return makeUniqueNoThrow<GoActivity>(renderer, mappedInput);
@@ -33,7 +54,35 @@ void GoActivity::onEnter() {
   screen = go::Screen::Menu;
   menuSelected = -1;
   clearAim();
+  // A VALID empty board before anything else. `go::Game{}` is zeroed, which is
+  // a board of size 0 with komi 0 and nobody to move -- a state the save file's
+  // own reader refuses. Without this, changing a setting and backing out of a
+  // device that had never started a game wrote a line that would not load, and
+  // the settings came back as the defaults on the next launch.
+  go::reset(game, boardSize);
   loadSave();
+#if defined(ARDUINO_ARCH_ESP32)
+  searchEnding = false;
+  TaskHandle_t handle = nullptr;
+  // Core 1 where there is one, for the same reason the render task is pinned
+  // there: a four second compute-bound task starves whichever core's idle task
+  // it shares, and core 0's is the one the system watches.
+#if defined(configNUM_CORES) && configNUM_CORES > 1
+  constexpr BaseType_t searchCore = 1;
+#else
+  constexpr BaseType_t searchCore = 0;
+#endif
+  if (xTaskCreatePinnedToCore(&GoActivity::searchTrampoline, "go_search", GO_SEARCH_TASK_STACK, this, 1, &handle,
+                              searchCore) == pdPASS) {
+    searchTask = handle;
+  } else {
+    // Not fatal: the search then runs on the loop task, which is where it used
+    // to run and where it may overflow. Saying so is the point -- a fallback
+    // nobody can see is a crash nobody can explain.
+    searchTask = nullptr;
+    LOG_ERR("GO", "No search task (%d bytes); searching on the loop task", GO_SEARCH_TASK_STACK);
+  }
+#endif
   // The seed has to differ between boots or the computer plays the same game
   // every time. millis() at entry is the only entropy this app can reach, and
   // it is enough: nothing here is a secret.
@@ -44,7 +93,61 @@ void GoActivity::onEnter() {
 
 void GoActivity::onExit() {
   writeSave();
+#if defined(ARDUINO_ARCH_ESP32)
+  // The task has to be GONE before this object is, because its loop reads this
+  // object's members. It is parked on a notification, so waking it with
+  // `searchEnding` set is what ends it, and it acknowledges before it deletes
+  // itself.
+  if (searchTask != nullptr) {
+    searchEnding = true;
+    searchWaiter = xTaskGetCurrentTaskHandle();
+    xTaskNotifyGive(static_cast<TaskHandle_t>(searchTask));
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000));
+    searchTask = nullptr;
+  }
+#endif
+  // Hundreds of kilobytes of PSRAM that nothing reads between games.
+  gomichi::forget();
   Activity::onExit();
+}
+
+#if defined(ARDUINO_ARCH_ESP32)
+void GoActivity::searchTrampoline(void* self) { static_cast<GoActivity*>(self)->searchLoop(); }
+
+void GoActivity::searchLoop() {
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (searchEnding) break;
+    searchResult = gomichi::chooseMove(searchBoard, searchLevel, seed, []() -> uint32_t { return millis(); });
+    xTaskNotifyGive(static_cast<TaskHandle_t>(searchWaiter));
+  }
+  // Nothing below this line may touch the activity: the waiter is free to
+  // delete it the moment it is notified.
+  TaskHandle_t waiter = static_cast<TaskHandle_t>(searchWaiter);
+  xTaskNotifyGive(waiter);
+  vTaskDelete(nullptr);
+}
+#endif
+
+int GoActivity::chooseComputerMove(const go::Game& snapshot) {
+#if defined(ARDUINO_ARCH_ESP32)
+  if (searchTask != nullptr) {
+    searchBoard = snapshot;
+    searchLevel = level;
+    searchResult = go::kPass;
+    searchWaiter = xTaskGetCurrentTaskHandle();
+    xTaskNotifyGive(static_cast<TaskHandle_t>(searchTask));
+    // No timeout. The search has its own clock and stops on it; a timeout here
+    // would leave a task writing into searchResult while the loop moved on.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    return searchResult;
+  }
+#endif
+  // The clock the engine measures itself against. It is lent rather than
+  // called, because GoMichi is freestanding and must stay that way: the host
+  // tests pass none and get a search bounded by simulations alone, which is
+  // what makes them deterministic.
+  return gomichi::chooseMove(snapshot, level, seed, []() -> uint32_t { return millis(); });
 }
 
 void GoActivity::loadSave() {
@@ -184,11 +287,7 @@ void GoActivity::takeComputerTurn() {
   // device. See the chess note in docs/building-apps.md.
   const go::Game snapshot = game;
   const uint32_t began = millis();
-  // The clock the engine measures itself against. It is lent rather than
-  // called, because GoEngine is freestanding and must stay that way: the host
-  // tests pass none and get a search bounded by playouts alone, which is what
-  // makes them deterministic.
-  const int move = gomichi::chooseMove(snapshot, level, seed, []() -> uint32_t { return millis(); });
+  const int move = chooseComputerMove(snapshot);
   const uint32_t took = millis() - began;
   thinking = false;
 

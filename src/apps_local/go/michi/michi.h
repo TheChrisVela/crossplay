@@ -119,6 +119,12 @@ char*  param_tree(const char *param);
 //------------------------- Functions in patterns.c ---------------------------
 void   free_large_patterns(void);
 void   make_pat3set(void);
+// FORK CHANGE: the ladder reader's Position stack is allocated rather than
+// static -- 500 of them is 2.8MB of .bss, which does not fit this chip's DRAM
+// segment at all. See michi.c.
+void   michi_stack_alloc(int depth);
+Position* michi_expand_scratch(void);
+void   michi_stack_free(void);
 char*  make_list_pat3_matching(Position *pos, Point pt);
 char*  make_list_pat_matching(Point pt, int verbose);
 void   init_large_patterns(const char *prob, const char *spat);

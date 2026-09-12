@@ -43,6 +43,14 @@ class GoActivity final : public linkplay::LinkActivity {
   // Throws the game in progress away, from the trash button on the RESUME row.
   void discardGame();
   void takeComputerTurn();
+  // The search, run where it has room. See the long note in GoActivity.cpp:
+  // michi's deepest path does not fit the loop task's stack, so the move is
+  // computed on a task of this app's own and the loop waits for it.
+  int chooseComputerMove(const go::Game& snapshot);
+#if defined(ARDUINO_ARCH_ESP32)
+  void searchLoop();
+  static void searchTrampoline(void* self);
+#endif
   void goTo(go::Screen next);
   void clearAim();
   void handlePointActivated(int point);
@@ -127,6 +135,18 @@ class GoActivity final : public linkplay::LinkActivity {
   bool resultRecorded = false;
   // A game that is part-played and can be resumed from the front door.
   bool inProgress = false;
+
+#if defined(ARDUINO_ARCH_ESP32)
+  // Created in onEnter and ended in onExit, so the 28KB it costs is only spent
+  // while this app is open. Null when the task could not be started, which
+  // falls back to searching on the loop task.
+  void* searchTask = nullptr;
+  void* searchWaiter = nullptr;
+  go::Game searchBoard{};
+  go::Level searchLevel = go::Level::Medium;
+  int searchResult = go::kPass;
+  volatile bool searchEnding = false;
+#endif
 
   linkplay::Play<go::Game> play;
 

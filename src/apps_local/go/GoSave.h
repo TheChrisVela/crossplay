@@ -26,6 +26,8 @@ namespace gosave {
 // A game that loads and is wrong is worse than one that does not load. What it
 // costs is the record, which is two integers.
 //
+// The GAME is validated only when `inProgress` says there is one; see unpack().
+//
 // 4 added the board size, in three places: the setting, the size of the game in
 // progress, and the size of the last finished position the front door draws.
 // 3 added the handicap, which became a setting of its own.

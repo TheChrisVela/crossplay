@@ -814,8 +814,14 @@ void compute_cfg_distances(Position *pos, Point pt, char cfg_map[BOARDSIZE])
 int line_height(Point pt, int size)
 // Return the line number above nearest board edge (0 based)
 {
+    // FORK CHANGE: the (N-size) term. empty_position() lays a board of `size`
+    // out at ARRAY rows N-size+1..N, not 1..size, so on a build where N is the
+    // maximum rather than the board being played this arithmetic was reading
+    // every row wrong. On N=13 with a 9x9 game it returned 0 -- the first-line
+    // penalty -- for tengen, and no penalty at all for the real first line,
+    // which inverts the opening priors on the default board.
     div_t d = div(pt,N+1);
-    int row = d.quot, col=d.rem;
+    int row = d.quot - (N - size), col=d.rem;
     if (row > size/2) row = size+1-row;
     if (col > size/2) col = size+1-col;
     if (row < col) return row-1;

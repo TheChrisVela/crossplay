@@ -72,15 +72,45 @@ int chooseMove(const go::Game& game, const go::Level level, uint32_t& seed, cons
   // The search never returns a pass: the two cases above are the only two this
   // app passes in, and michi liking a pass at sixty simulations is not one of
   // them. The bridge hands back its best non-pass move instead.
-  const int move = michi_bridge_genmove(game.size, board, game.toMove, game.komiHalves, settings.simulations,
-                                        settings.budgetMs, clock);
-  if (move < 0) return go::kPass;
-  // Whatever the search produced has to survive OUR rules. michi keeps its own
-  // superko hash and this game keeps its own ring, and the one move a year
-  // where the two disagree must not reach the board.
-  if (!go::legal(game, move, game.toMove)) return go::kPass;
-  return move;
+  const int ko = game.ko < game.points() ? static_cast<int>(game.ko) : -1;
+  const int lastMove = game.lastMove < game.points() ? static_cast<int>(game.lastMove) : -1;
+  const int move =
+      michi_bridge_genmove(game.size, board, game.toMove, game.komiHalves, ko, lastMove,
+                           static_cast<int>(game.moveNumber), settings.simulations, settings.budgetMs, clock);
+
+  // Whatever the search produced has to survive OUR rules, and when it does not
+  // the answer is the search's NEXT choice rather than a pass. michi keeps its
+  // own superko hash and this game keeps its own ring; a pass here threw away a
+  // move in the middle of a fight and, if the human passed back, the game.
+  if (move >= 0 && go::legal(game, move, game.toMove)) return move;
+  int ranked[8] = {};
+  const int count = michi_bridge_ranked(game.size, ranked, 8);
+  for (int i = 0; i < count; ++i) {
+    if (go::legal(game, ranked[i], game.toMove)) return ranked[i];
+  }
+  // Nothing the search looked at is playable. Take any move that is not filling
+  // our own eye before considering a pass, because hasUsefulMove() above said
+  // there is one.
+  const int points = game.points();
+  for (int point = 0; point < points; ++point) {
+    if (go::legal(game, point, game.toMove) && !go::isEye(game, point, game.toMove)) return point;
+  }
+  return go::kPass;
 }
+
+Context lastContext(const int size) {
+  int ko = -1;
+  int lastMove = -1;
+  int moveNumber = 0;
+  michi_bridge_context(size, &ko, &lastMove, &moveNumber);
+  Context out{};
+  out.ko = ko >= 0 ? ko : go::kNoPoint;
+  out.lastMove = lastMove == -2 ? go::kPass : (lastMove >= 0 ? lastMove : go::kNoPoint);
+  out.moveNumber = moveNumber;
+  return out;
+}
+
+void forget() { michi_bridge_forget(); }
 
 int lastSimulations() { return michi_bridge_last_simulations(); }
 

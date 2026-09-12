@@ -902,12 +902,16 @@ void testTheOpponentBeatsARandomMoverAtEveryLevel() {
 // than a stopwatch reading.
 uint32_t gFakeMs = 0;
 uint32_t gFakeReadings = 0;
+uint32_t gFakeStep = 400;
 uint32_t fakeClock() {
-  // Every reading is a millisecond later than the last, so a search that keeps
-  // asking runs out of budget in a bounded number of asks and the test cannot
-  // hang whatever the engine does.
+  // The step is set to just over half the level's budget, so the budget
+  // genuinely runs out on the second chunk. A one millisecond step does not:
+  // the search finishes its whole simulation count in three or four readings
+  // and the branch this test exists to exercise is never taken -- the test
+  // then passes with the budget check deleted.
   ++gFakeReadings;
-  return ++gFakeMs;
+  gFakeMs += gFakeStep;
+  return gFakeMs;
 }
 
 void testTheClockStopsTheSearchWhateverTheSimulationCountSays() {
@@ -934,15 +938,25 @@ void testTheClockStopsTheSearchWhateverTheSimulationCountSays() {
     // clock expires still has to finish.
     CHECK(settings.budgetMs <= 4500);
 
+    // The same position twice: once with all the time in the world, once with
+    // this clock. The comparison is what makes the assertion able to fail --
+    // "fewer than the count" is also true of a search michi stopped early by
+    // itself, and that is what the first version of this test was measuring.
+    uint32_t seed = 9090u + static_cast<uint32_t>(i);
+    const int unhurried = gomichi::chooseMove(game, level, seed);
+    const int unhurriedSims = gomichi::lastSimulations();
+    CHECK(unhurried == kPass || legal(game, unhurried, game.toMove));
+
     gFakeMs = 0;
     gFakeReadings = 0;
-    uint32_t seed = 9090u + static_cast<uint32_t>(i);
+    gFakeStep = settings.budgetMs / 2 + 1;
     const int move = gomichi::chooseMove(game, level, seed, fakeClock);
     CHECK(move == kPass || legal(game, move, game.toMove));
-    // The clock was read, and the search stopped on it rather than on its
-    // count: with a clock this fast the budget is gone within a handful of
-    // chunks, so far fewer simulations ran than the level allows.
-    CHECK(gFakeReadings > 0);
+    // The clock was read, the budget ran out on it, and the search that was
+    // stopped did strictly less work than the one that was not.
+    CHECK(gFakeReadings > 1);
+    CHECK(gFakeMs >= settings.budgetMs);
+    CHECK(gomichi::lastSimulations() < unhurriedSims);
     CHECK(gomichi::lastSimulations() < static_cast<int>(settings.simulations));
   }
 
@@ -1081,6 +1095,58 @@ void testItNeverPassesAWonGameAway() {
   CHECK(gomichi::chooseMove(opening, go::Level::Easy, seed) != kPass);
   opening.toMove = kBlack;
   CHECK(gomichi::chooseMove(opening, go::Level::Easy, seed) != kPass);
+}
+
+void testTheEngineIsToldAboutTheKo() {
+  // The one move on the board that the rules refuse, and the one the engine
+  // most wants to play.
+  //
+  // michi keeps its own position, and the bridge builds it by PLACING stones
+  // rather than playing them -- which is right, because the position handed
+  // over is already the result of every capture in the game, but it means the
+  // ko point does not come with it. Left at zero, michi sees the recapture as
+  // an ordinary capture of a stone in atari, which on this board is comfortably
+  // the highest-value point there is.
+  //
+  // What that cost before the ko was carried across: the search offered the
+  // recapture, the rules refused it, and chooseMove's fallback was a PASS --
+  // in the middle of a ko fight. If the human passed back, the game ended.
+  Game game;
+  const char* rows[kSize] = {
+      ".........",  //
+      "..XO.....",  //
+      ".XO.O....",  //
+      "..XO.....",  //
+      ".........",  //
+      ".........",  //
+      ".........",  //
+      ".........",  //
+      ".........",  //
+  };
+  setUp(game, rows, kBlack);
+  CHECK(play(game, pointAt(2, 3)));
+  // Black took the ko, so White may not take it straight back.
+  CHECK(game.toMove == kWhite);
+  CHECK(game.ko == pointAt(2, 2));
+  CHECK(!legal(game, pointAt(2, 2), kWhite));
+
+  uint32_t seed = 5150u;
+  for (int level = 0; level < 3; ++level) {
+    const int move = gomichi::chooseMove(game, static_cast<go::Level>(level), seed);
+    // Never the ko, never a pass, always legal. That is the guarantee the app
+    // rests on, and chooseMove's fallbacks hold it whether or not the engine
+    // was told anything -- which is exactly why it is not enough on its own.
+    CHECK(move != kPass);
+    CHECK(move != pointAt(2, 2));
+    CHECK(legal(game, move, kWhite));
+
+    // So ask the engine what it was told. This is the assertion that fails when
+    // the ko is not carried across, and the one above is not.
+    const gomichi::Context context = gomichi::lastContext(kSize);
+    CHECK(context.ko == pointAt(2, 2));
+    CHECK(context.lastMove == pointAt(2, 3));
+    CHECK(context.moveNumber == game.moveNumber);
+  }
 }
 
 void testEasyIsWeakWithoutLookingBroken() {
@@ -1304,20 +1370,72 @@ void testASavedGameComesBackExactly() {
   // The superko ring surviving the round trip is not a detail: a resumed game
   // that forgot it accepts a repetition the same game refused a minute before
   // the device went to sleep.
-  CHECK(!legal(back.game, back.game.lastMove, back.game.toMove) || back.game.lastMove == kPass ||
-        back.game.at(back.game.lastMove) != kEmpty);
+  // Every point answers legality the same way it did before the round trip.
+  // That is the ring, the ko point, the board and the side to move at once,
+  // and unlike the version this replaces it can fail: dropping `recent[]` or
+  // `ko` from pack() makes a refused move legal again, which is a rules bug
+  // that only ever appears after a sleep.
+  for (int point = 0; point < kPoints; ++point) {
+    CHECK(legal(back.game, point, back.game.toMove) == legal(game, point, game.toMove));
+  }
+  CHECK(back.game.ko == game.ko);
+  for (int i = 0; i < kHistory; ++i) CHECK(back.game.recent[i] == game.recent[i]);
+}
+
+void testASaveWithNoGameInItStillCarriesTheSettings() {
+  // A device that has never started a game. `go::Game{}` is zeroed -- board
+  // size 0, komi 0, nobody to move -- and validating it anyway made the whole
+  // file unreadable, so setting a board size and backing out lost the setting
+  // AND the record. The game is replaced rather than trusted when there is
+  // nothing to resume.
+  gosave::Save save;
+  save.wins = 3;
+  save.losses = 1;
+  save.level = go::Level::Hard;
+  save.boardSize = go::kLargeSize;
+  save.handicap = 4;
+  save.playAs = kWhite;
+  save.inProgress = false;
+
+  char line[1600];
+  CHECK(gosave::pack(save, line, sizeof(line)) > 0);
+
+  gosave::Save back;
+  CHECK(gosave::unpack(line, back));
+  CHECK(back.wins == 3);
+  CHECK(back.losses == 1);
+  CHECK(back.level == go::Level::Hard);
+  CHECK(back.boardSize == go::kLargeSize);
+  CHECK(back.handicap == 4);
+  CHECK(back.playAs == kWhite);
+  CHECK(!back.inProgress);
+  // And what came back is a board the rules can be asked about, not a zeroed
+  // struct waiting to divide by its own size.
+  CHECK(back.game.size == go::kLargeSize);
+  CHECK(back.game.points() == 169);
+  CHECK(settlesEveryGame(back.game.komiHalves));
+  CHECK(legal(back.game, pointAt(4, 4), back.game.toMove));
 }
 
 void testAHalfWrittenSaveCostsNothingButTheGame() {
   gosave::Save good;
   good.wins = 3;
-  char line[1400];
+  char line[1600];
   CHECK(gosave::pack(good, line, sizeof(line)) > 0);
+  // The INTACT line has to parse, or the loop below is measuring nothing: an
+  // earlier version of this fixture produced a line the reader refused whole,
+  // so every truncation was refused for a reason that had nothing to do with
+  // truncation.
+  {
+    gosave::Save whole;
+    CHECK(gosave::unpack(line, whole));
+    CHECK(whole.wins == 3);
+  }
 
   // Cut the line anywhere past the header and it must be refused outright, not
   // read as a shorter board.
   for (int cut = 30; cut < 200; cut += 17) {
-    char broken[1400];
+    char broken[1600];
     std::memcpy(broken, line, static_cast<size_t>(cut));
     broken[cut] = '\0';
     gosave::Save into;
@@ -1504,6 +1622,7 @@ int main() {
   testTheStateFitsAPacketAndCopiesAsBytes();
   testBackIsTotalAndAlwaysReachesTheTop();
   testASavedGameComesBackExactly();
+  testASaveWithNoGameInItStillCarriesTheSettings();
   testAHalfWrittenSaveCostsNothingButTheGame();
   testTheDeadStoneGuessFindsAWholeGroup();
   testACountEndsOnlyWhenBOTHSeatsAgree();
@@ -1514,6 +1633,7 @@ int main() {
   testEveryLevelIsADifferentPlayer();
   testAHandicapIsStonesOnTheBoardAndWhiteToPlay();
   testItNeverPassesAWonGameAway();
+  testTheEngineIsToldAboutTheKo();
   testEasyIsWeakWithoutLookingBroken();
   testTheLargeBoardIsTheSameGameOnMorePoints();
   testResetClearsTheTailOfTheLargerBoard();

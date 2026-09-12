@@ -49,4 +49,20 @@ int chooseMove(const go::Game& game, go::Level level, uint32_t& seed, Clock cloc
 int lastSimulations();
 uint32_t lastMs();
 
+// What the engine's position says its ko, last move and move count are, in this
+// app's terms. The ko point, or kNoPoint; the last move, kPass, or kNoPoint.
+// Only the suite asks: it is how "the engine was told about the ko" is checked
+// directly rather than guessed from the move that came back.
+struct Context {
+  int ko;
+  int lastMove;
+  int moveNumber;
+};
+Context lastContext(int size);
+
+// Drops the search tree. The engine stays up; the next move builds a new one.
+// Called when the app closes: the tree is hundreds of kilobytes of PSRAM and
+// nothing reads it between games.
+void forget();
+
 }  // namespace gomichi

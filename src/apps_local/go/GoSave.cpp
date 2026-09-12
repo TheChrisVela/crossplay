@@ -108,7 +108,6 @@ bool unpack(const char* text, Save& save) {
   if (points != go::kMaxPoints) return false;
   if (parsed.boardSize != go::kSmallSize && parsed.boardSize != go::kLargeSize) return false;
   if (parsed.lastSize != go::kSmallSize && parsed.lastSize != go::kLargeSize) return false;
-  if (parsed.game.size != go::kSmallSize && parsed.game.size != go::kLargeSize) return false;
 
   for (int i = 0; i < go::kMaxPoints; ++i) parsed.lastPoints[i] = static_cast<uint8_t>(take(ok));
   for (int i = 0; i < go::kCellBytes; ++i) parsed.game.cell[i] = static_cast<uint8_t>(take(ok));
@@ -134,16 +133,29 @@ bool unpack(const char* text, Save& save) {
   }
   if (!ok) return false;
 
-  // A resumed screen is only meaningful with the state behind it. A game whose
-  // side to move is not a colour, or whose stage is not one of the three, is a
-  // file this build cannot play, so the record survives and the game does not.
-  if (parsed.game.toMove != go::kBlack && parsed.game.toMove != go::kWhite) return false;
-  if (parsed.game.stage > static_cast<uint8_t>(go::Stage::Over)) return false;
-  if (parsed.game.recentCount > go::kHistory) return false;
-  // A komi that cannot settle a game is a komi this app never set, so the file
-  // is either damaged or from a build that did not write one.
-  if (!go::settlesEveryGame(parsed.game.komiHalves)) return false;
-  if (parsed.game.handicap > go::kMaxHandicap) return false;
+  // The GAME is only validated when there is one. A file with nothing to resume
+  // carries whatever the writer's board happened to be, and on a device that
+  // has never played a game that is a zeroed struct: size 0, komi 0, nobody to
+  // move. Validating it anyway rejected the whole file, so a player who set a
+  // board size and backed out lost the setting -- and the record with it.
+  //
+  // The game is replaced rather than trusted in that case, because nothing
+  // reads it and an invalid board must not reach the rules by another door.
+  if (!parsed.inProgress) {
+    go::reset(parsed.game, parsed.boardSize);
+  } else {
+    // A resumed screen is only meaningful with the state behind it. A game whose
+    // side to move is not a colour, or whose stage is not one of the three, is a
+    // file this build cannot play, so the record survives and the game does not.
+    if (parsed.game.size != go::kSmallSize && parsed.game.size != go::kLargeSize) return false;
+    if (parsed.game.toMove != go::kBlack && parsed.game.toMove != go::kWhite) return false;
+    if (parsed.game.stage > static_cast<uint8_t>(go::Stage::Over)) return false;
+    if (parsed.game.recentCount > go::kHistory) return false;
+    // A komi that cannot settle a game is a komi this app never set, so the file
+    // is either damaged or from a build that did not write one.
+    if (!go::settlesEveryGame(parsed.game.komiHalves)) return false;
+    if (parsed.game.handicap > go::kMaxHandicap) return false;
+  }
   if (parsed.level > go::Level::Hard) parsed.level = go::Level::Medium;
   if (parsed.opponent > go::Opponent::Human) parsed.opponent = go::Opponent::Computer;
   if (parsed.playAs != go::kBlack && parsed.playAs != go::kWhite) parsed.playAs = go::kBlack;

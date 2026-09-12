@@ -38,7 +38,7 @@ choice documented in `docs/design-language.md`.
 **michi-c2**, MIT, Copyright (c) Denis Blumstein, from
 [db3108/michi-c2](https://github.com/db3108/michi-c2), a C recoding of Petr
 Baudis's [michi](https://github.com/pasky/michi). Go's opponent is this engine;
-its core is vendored at `src/apps_local/go/michi/` with the three fork changes
+its core is vendored at `src/apps_local/go/michi/` with the eight fork changes
 marked in the source. **No repository in the Michi family ships a LICENSE file
 and most of its sources carry no header**, so the grant is the sentence in its
 README, reproduced in `src/apps_local/go/michi/UPSTREAM-README.md`: "Michi-c2 is

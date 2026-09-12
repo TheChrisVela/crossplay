@@ -29,8 +29,32 @@ void michi_bridge_init(void);
 // `nowMs` is a clock the caller lends; when it is null the search runs its full
 // simulation count, which is what the host tests want so that a result does not
 // depend on how fast the machine running them happens to be.
-int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHalves, int simulations,
-                         uint32_t budgetMs, uint32_t (*nowMs)(void));
+// `ko` is the point simple ko forbids right now, or -1; `lastMove` is the move
+// just played, -1 for none and -2 for a pass. Both are OURS to supply and both
+// are load-bearing: without the ko the engine offers the one move the rules
+// refuse, and without the last move every local heuristic in the playout aims
+// at whichever stone happened to be placed last in scan order.
+int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHalves, int ko, int lastMove,
+                         int moveNumber, int simulations, uint32_t budgetMs, uint32_t (*nowMs)(void));
+
+// The moves the last search liked, best first, as `row * size + col`. Never a
+// pass. Writes at most `max` and returns how many. Lets the caller take the
+// next choice when its own rules refuse the first -- michi keeps a superko hash
+// this app does not share, so that happens.
+int michi_bridge_ranked(int size, int *out, int max);
+
+// What the engine's own position says its ko point, last move and move count
+// are, in OUR terms: point indices, -1 for none, -2 for a pass. Exists so that
+// "the engine was told" is a fact a test can assert rather than something
+// inferred from the move it chose -- michi does not always want the ko even
+// when it is offered one, so a test that only watches the move can pass with
+// the ko not transferred at all.
+void michi_bridge_context(int size, int *ko, int *lastMove, int *moveNumber);
+
+// Frees the search tree. The engine stays initialised; the next genmove builds
+// a new one. Called when the app closes, so a few hundred kilobytes of PSRAM do
+// not sit there for the rest of the boot.
+void michi_bridge_forget(void);
 
 // How many simulations the last genmove actually ran before its clock stopped
 // it, and how long it took. For the log line that turns an estimate into a fact.

@@ -92,9 +92,54 @@ extern char  buf[BUFLEN];
 static int   disp_ladder;
 static char* colstr  = "@ABCDEFGHJKLMNOPQRST";
 
+// How deep the ladder reader is; see MICHI_LADDER_MAX below.
+static int ladder_depth;
+
+// expand()'s scratch position. Allocated once, beside the ladder stack and for
+// the same reason: 5.7KB in a frame on the deepest path this engine takes.
+static Position *expand_scratch;
+Position *michi_expand_scratch(void)
+{
+    if (expand_scratch == NULL) expand_scratch = michi_malloc(sizeof(Position));
+    return expand_scratch;
+}
+
 // Stack of Positions for use in recursive calls fix_atari/read_ladder_attack
+//
+// FORK CHANGE: allocated, not static, and 128 deep rather than 500.
+//
+// sizeof(Position) is about 5.7KB at N=13, so upstream's `Position
+// stack_pos[500]` is 2.8MB of .bss. On a desktop that is nothing; on this chip
+// it is nine times the whole DRAM segment, and the device build failed to LINK
+// with `dram0_0_seg overflowed by 2811856 bytes`. It goes to PSRAM through
+// michi_malloc like everything else here, and michi_stack_free() gives it back
+// when the app closes.
+//
+// 128 rather than 500 because this stack is only the ladder reader's, and a
+// ladder cannot be longer than the board it runs across: twenty-six plies on
+// thirteen lines, plus the fix_atari nesting above it. 128 is five times that.
 int avail_pos;
-Position stack_pos[500];
+static int stack_pos_depth;
+Position *stack_pos;
+
+void michi_stack_alloc(int depth)
+{
+    if (stack_pos != NULL) return;
+    stack_pos = michi_malloc((size_t)depth * sizeof(Position));
+    stack_pos_depth = depth;
+    avail_pos = 0;
+}
+
+void michi_stack_free(void)
+{
+    free(stack_pos);
+    stack_pos = NULL;
+    stack_pos_depth = 0;
+    avail_pos = 0;
+    free(expand_scratch);
+    expand_scratch = NULL;
+    ladder_depth = 0;
+}
 
 //================================ Go heuristics ==============================
 // The couple of functions read_ladder_attack / fix_atari is maybe the most 
@@ -103,11 +148,38 @@ Position stack_pos[500];
 //
 int fix_atari_r(Position *pos, Point pt, Slist moves);
 
+// FORK CHANGE: a depth cap on the ladder reader.
+//
+// read_ladder_attack recurses through fix_atari_r back into itself, one level
+// per ply of the ladder, and each level costs about a kilobyte of C stack. On a
+// desktop with an eight megabyte stack that is free; on this chip the whole
+// task gets tens of kilobytes, and the recursion is the one thing the stack
+// budget tool cannot bound (it reports cycles and never sums them).
+//
+// Sixteen plies reads every ladder a nine by nine board can hold and most of
+// what thirteen can. Past it the reader answers "not caught", which is the
+// conservative answer: the engine declines to claim a capture it has not
+// proved, rather than crashing on a board somebody is looking at.
+#define MICHI_LADDER_MAX 16
+static Point read_ladder_attack_r(Position *pos, Point pt, Slist libs);
+
+Point read_ladder_attack(Position *pos, Point pt, Slist libs)
+{
+    if (ladder_depth >= MICHI_LADDER_MAX) return PASS_MOVE;
+    ladder_depth++;
+    Point move = read_ladder_attack_r(pos, pt, libs);
+    ladder_depth--;
+    return move;
+}
+
 __INLINE__ Position *push_position(Position *pos)
 {
+    // FORK CHANGE: the bound is checked BEFORE the write. Upstream computes the
+    // slot, increments, then tests -- so the call that overflows writes one
+    // Position past the end and only then reports it.
+    if (avail_pos >= stack_pos_depth)
+        fatal_error("stack of Position overflow");
     Position *newpos = stack_pos + avail_pos++;
-    if (avail_pos > 500)
-        fatal_error("stack of Position overflow (> 500)");
     memcpy(newpos, pos, sizeof(Position));
     return newpos;
 }
@@ -117,7 +189,7 @@ __INLINE__ void pop_position(void)
     avail_pos--;
 }
 
-Point read_ladder_attack(Position *pos, Point pt, Slist libs)
+static Point read_ladder_attack_r(Position *pos, Point pt, Slist libs)
 // Check if a capturable ladder is being pulled out at pt and return a move
 // that continues it in that case. Expects its two liberties in libs.
 // Actually, this is a general 2-lib capture exhaustive solver.
@@ -193,7 +265,11 @@ int fix_atari_r(Position *pos, Point pt, Slist moves)
 {
     Block b = point_block(pos, pt);
     int   in_atari=1;
-    Point l, libs[5], blocks[256], blibs[5];
+    // FORK CHANGE: MAX_BLOCKS+1, not 256. This is a Slist of BLOCK ids and
+    // there are only MAX_BLOCKS of them (128 at N=13), so 256 is half a
+    // kilobyte of frame that cannot be used -- once per level of a recursion
+    // that is sixteen deep.
+    Point l, libs[5], blocks[MAX_BLOCKS+1], blibs[5];
 
     slist_clear(moves);
     if (block_nlibs(pos,b) >= 2) { 
@@ -600,7 +676,11 @@ void expand(Position *pos, TreeNode *tree)
     int      nchildren = 0;
     Info     sizes[BOARDSIZE];
     Point    moves[BOARDSIZE];
-    Position pos2;
+    // FORK CHANGE: heap, not frame. sizeof(Position) is about 5.7KB at N=13,
+    // and this function sits in the deepest path the search takes. expand() is
+    // not re-entrant -- it is called from tree_descend and from tree_search,
+    // never from itself -- so one scratch position serves every call.
+    Position *pos2 = michi_expand_scratch();
     TreeNode *childset[BOARDSIZE], *node;
     if (board_last_move(pos) != PASS_MOVE)
         compute_cfg_distances(pos, board_last_move(pos), cfg_map);
@@ -608,7 +688,17 @@ void expand(Position *pos, TreeNode *tree)
     // Use light random playout generator to get all the empty points (not eye)
     gen_playout_moves_random(pos, moves, BOARD_IMIN-1);
 
-    tree->children = michi_calloc(slist_size(moves)+1, sizeof(TreeNode*));
+    // FORK CHANGE: +2, not +1. The array is NULL-terminated and free_tree()
+    // walks it until the NULL, but the block at the foot of this function adds
+    // a PASS child when nchildren <= 2 -- and when every candidate was legal
+    // that child lands in the terminator's slot, so the walk runs off the end
+    // and free_tree() frees whatever it reads.
+    //
+    // Upstream never meets it because genmove() passes out of a decided game
+    // before the board gets down to two points. This fork deliberately does
+    // not (passing is the app's decision, see MichiBridge.c), so the last two
+    // moves of nearly every game are exactly that shape.
+    tree->children = michi_calloc(slist_size(moves)+2, sizeof(TreeNode*));
     FORALL_IN_SLIST(moves, pt) {
         assert(point_color(pos, pt) == EMPTY);
         char* ret = play_move(pos, pt);
@@ -650,11 +740,11 @@ void expand(Position *pos, TreeNode *tree)
 
     // Second pass setting priors, considering each move just once now
     copy_to_large_board(pos);                       // For large patterns
-    pos2 = *pos;
+    *pos2 = *pos;
     for (int k=0 ; k<tree->nchildren ; k++) {
         node = tree->children[k];
         Point pt = node->move;
-        play_move(&pos2, pt);           // No need to check the move is legal
+        play_move(pos2, pt);           // No need to check the move is legal
 
         if (board_last_move(pos) != PASS_MOVE 
             && cfg_map[pt]-1 < LEN_PRIOR_CFG) {
@@ -676,7 +766,7 @@ void expand(Position *pos, TreeNode *tree)
             }
         }
 
-        fix_atari(&pos2, pt, SINGLEPT_OK, TWOLIBS_TEST, !TWOLIBS_EDGE_ONLY,
+        fix_atari(pos2, pt, SINGLEPT_OK, TWOLIBS_TEST, !TWOLIBS_EDGE_ONLY,
                                                                  moves, sizes);
         if (slist_size(moves) > 0) {
             node->pv += PRIOR_SELFATARI;
@@ -689,7 +779,7 @@ void expand(Position *pos, TreeNode *tree)
             node->pv += pattern_prior * PRIOR_LARGEPATTERN;
             node->pw += pattern_prior * PRIOR_LARGEPATTERN;
         }
-        undo_move(&pos2);
+        undo_move(pos2);
     }
 
     if (tree->nchildren <= 2) {
@@ -939,7 +1029,10 @@ Point tree_search(Position *pos, TreeNode *tree, int n, int owner_map[],
     int *amaf_map=michi_calloc(BOARDSIZE, sizeof(int)), i, last, visit[2]; 
     Point    bestmove;
     Position *workpos=michi_malloc(sizeof(Position));
-    TreeNode *best, *bests[2], *nodes[500];
+    // FORK CHANGE: heap, not frame. Two kilobytes of pointers on the same
+    // deepest path as expand()'s position above.
+    TreeNode **nodes=michi_calloc(500, sizeof(TreeNode*));
+    TreeNode *best, *bests[2];
 
     // Initialize the root node if necessary
     if (tree->children == NULL) expand(pos, tree);
@@ -1001,7 +1094,7 @@ finished:
         print_tree_summary(tree, i, stderr);
     }
 
-    free(amaf_map); free(workpos);
+    free(amaf_map); free(workpos); free(nodes);
     if (best->move == PASS_MOVE && board_last_move(pos) == PASS_MOVE)
         bestmove = PASS_MOVE;
     else if (((double) best->w / (double) best->v) < RESIGN_THRES) 

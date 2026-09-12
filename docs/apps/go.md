@@ -164,7 +164,8 @@ its side of that header is C and everything on this side is C++. Patching four
 thousand lines of somebody else's engine to satisfy a compiler it was never
 written for is a sync nobody wants to do twice.
 
-**Three fork changes, all marked `FORK CHANGE:` in the source:**
+**Eight fork changes, all marked `FORK CHANGE:` in the source.** Three are
+ports and five are bugs that only a build like this one can reach:
 
 - `N` is **13**, not 19. It is the compile-time MAXIMUM; the size actually
   played is `pos->size`, so one build serves both boards and a nine by nine game
@@ -172,10 +173,33 @@ written for is a sync nobody wants to do twice.
 - `log_fmt_s` tolerates a null sink. michi logs through a `FILE*` that `ui.c`
   opens, and `ui.c` is not vendored.
 - Every allocation goes through `michi_malloc`/`michi_calloc`, and on ESP32
-  those are `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`. **The search tree lives
-  in PSRAM**: it is hundreds of kilobytes at these simulation counts, internal
-  SRAM does not have that to spare, and the tree is the least cache-sensitive
-  thing in the app. The 3x3 pattern table stays where it was.
+  those are `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` falling back to internal
+  RAM. **The search tree lives in PSRAM**: it is hundreds of kilobytes at these
+  simulation counts, internal SRAM does not have that to spare, and the tree is
+  the least cache-sensitive thing in the app. The 3x3 pattern table stays where
+  it was. `GoActivity::onExit` frees the tree, or it sits there for the rest of
+  the boot while somebody reads a book.
+- `mark1`, `mark2` and `buf` are **extern** in `michi.c`. Upstream defines each
+  of them twice, which links only under `-fcommon`; GCC 10 turned that off, so
+  both the host suite's compiler and the Xtensa one reject the duplicates.
+- **No `<x86intrin.h>`.** `non_portable.h` includes it on any GCC that is not
+  Apple's, and the include is vestigial: the two functions under it are
+  compiler builtins. No Xtensa build can find that header.
+- **`expand()` allocates one more child slot.** The array is NULL-terminated
+  and `free_tree()` walks to the NULL, but the block that adds a PASS child
+  when a node has two or fewer children writes it into the terminator's slot
+  when every candidate was legal -- so the walk runs off the end and frees
+  whatever it reads. Upstream never meets it because `genmove` passes out of a
+  decided game before the board is down to two points; this fork deliberately
+  does not, so it is the last two moves of nearly every game.
+- **`line_height()` subtracts `N - size`.** `empty_position()` lays a board of
+  `size` out at array rows `N-size+1..N`, not `1..size`, so on a build where N
+  is the maximum rather than the board being played the arithmetic read every
+  row wrong. On the default nine by nine board it returned the first-line
+  penalty for tengen and no penalty at all for the real first line, which
+  inverts michi's opening priors.
+- **`print_board()` tolerates a null sink**, which `michi_assert`'s failure
+  path hands it. A crash inside the code that reports a crash reports nothing.
 
 **Two things michi does are NOT used, and both are measurements rather than
 preferences.**
@@ -193,6 +217,35 @@ preferences.**
   not played, because the position is already the result of every capture and ko
   in the game.
 
+**The engine is told what it cannot see.** The bridge builds michi's position
+by PLACING stones rather than playing them, which is right -- the position
+handed over is already the result of every capture and ko in the game -- but
+it means three things do not come with it, and `board_place_stone` quietly
+leaves all three wrong:
+
+- **the ko point.** Left at zero, michi sees the recapture as an ordinary
+  capture of a stone in atari, which is usually the highest-value point on the
+  board. The rules then refuse the move it offers.
+- **the last move.** `board_place_stone` is `play_move` with the counter wound
+  back, so after the loop `pos->last` is the bottom-right-most stone on the
+  board. Every local heuristic in the playout, and the "play near the last
+  move" prior at the root, then aim at the wrong part of the board.
+- **the move count**, which is what makes a playout inheriting a pass start as
+  though the opponent had just passed.
+
+`gomichi::lastContext()` reads all three back out of michi's own position, so
+"the engine was told" is a fact the suite asserts rather than something
+inferred from the move that came back. That distinction is the whole test: the
+app's fallbacks hold the guarantee -- never the ko, never a pass, always legal
+-- whether or not anything was transferred, so a test watching only the move
+passes with the ko dropped entirely.
+
+**A refused move is answered with the next choice, never a pass.**
+`chooseMove` asks the bridge for the search's ranked moves and takes the first
+one our rules allow, then any legal move that is not filling our own eye. The
+version that passed instead threw a move away in the middle of a ko fight, and
+if the human passed back it ended the game.
+
 **Passing is the app's decision, not the engine's.** michi will not pass while
 there is a point left to take, and it is right not to: under area scoring a
 neutral point is worth one. To a person it reads as the machine not knowing the
@@ -207,9 +260,20 @@ whole simulation count in one call with no way in or out, which is fine for a
 program with a GTP time control and wrong for a panel somebody is holding.
 `tree_search` accumulates into the tree it is given -- michi itself calls it
 twice on one tree when it wants to think harder -- so the loop stops between
-chunks. The first chunk is eight simulations, and every chunk after it is sized
-to sixty percent of the remaining budget from the rate actually measured, so the
-budget holds on both boards without a constant per board.
+chunks. The first chunk is eight simulations. Every chunk after it is sized by
+two caps: half the remaining budget, and a quarter second of predicted work.
+The second is what makes this a bound rather than an estimate -- without it one
+chunk can be the whole remaining budget, and the rate it is sized from was
+measured on the first eight simulations of an empty tree, which is exactly
+where that rate is wrong.
+
+The rate's numerator is `nplayouts_real`, what actually ran, not what was
+asked for. `tree_search` has its own early stops, and charging for simulations
+it skipped overstates the speed -- which oversizes the next chunk, which is the
+one direction the budget cannot afford to be wrong in. Chunking does make those
+early stops relative to the chunk rather than to the level's count, so a clearly
+decided position stops sooner than upstream would. It stops sooner, never
+wrong.
 
 What is NOT safe is reimplementing `genmove`'s preamble. An earlier version did,
 missed part of it, and produced a tree in which PASS won every playout and every

@@ -79,6 +79,10 @@ void make_pretty(Position *pos, char pretty_board[BOARDSIZE], int *capB
 void print_board(Position *pos, FILE *f)
 // Print visualization of the given board position
 {
+    // FORK CHANGE: a null sink is the normal state here (see log_fmt_s). The
+    // only caller that can reach this with flog unset is michi_assert's failure
+    // path, and a crash inside the code that reports a crash reports nothing.
+    if (f == NULL) return;
     char pretty_board[BOARDSIZE], strko[8];
     int  capB, capW;
 
@@ -118,7 +122,17 @@ void print_board(Position *pos, FILE *f)
 // thing here, unlike the 3x3 pattern table, which stays where it was.
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_heap_caps.h>
-#define MICHI_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+// PSRAM first, internal RAM only if that fails. A shortfall here ends in
+// exit(), which on this device is a reboot, so the fallback is worth the two
+// lines: the allocations are a few hundred kilobytes of tree and PSRAM
+// fragmenting is the likelier of the two ways to run out.
+static void* michi_alloc(size_t n)
+{
+    void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p == NULL) p = malloc(n);
+    return p;
+}
+#define MICHI_ALLOC(n) michi_alloc(n)
 #else
 #define MICHI_ALLOC(n) malloc(n)
 #endif

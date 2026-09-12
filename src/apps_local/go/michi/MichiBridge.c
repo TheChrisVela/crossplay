@@ -48,6 +48,9 @@ void michi_bridge_init(void)
     flog = NULL;
 
     make_pat3set();
+    // The ladder reader's Position stack, 128 deep. See the note in michi.c:
+    // upstream's static 500 is 2.8MB and does not fit this chip's DRAM at all.
+    michi_stack_alloc(128);
     // The LARGE pattern board, which upstream initialises inside
     // init_large_patterns() -- the function that loads patterns.prob and
     // patterns.spat from disk. Those two files are several megabytes and are
@@ -96,7 +99,8 @@ void michi_bridge_init(void)
     gReady = 1;
 }
 
-static void adopt(int size, const uint8_t *board, int toMove, int komiHalves)
+// `ko` and `lastMove` are OUR point indices (-1 for none, -2 for a pass).
+static void adopt(int size, const uint8_t *board, int toMove, int komiHalves, int ko, int lastMove, int moveNumber)
 {
     board_set_size(gPos, size);
     empty_position(gPos);
@@ -112,6 +116,25 @@ static void adopt(int size, const uint8_t *board, int toMove, int komiHalves)
         }
     }
     board_set_color_to_play(gPos, toMove == 1 ? BLACK : WHITE);
+
+    // board_place_stone() is play_move() with the move counter wound back, so
+    // the loop above has just left pos->last on the bottom-right-most stone on
+    // the board and pos->ko on whatever that placement happened to arm. Both
+    // are wrong and both are read: ko decides which moves are legal, and last
+    // is what every local heuristic in the playout looks at. Set them from the
+    // GAME, which is the only thing that knows.
+    board_set_ko(gPos, ko >= 0 ? michi_point(ko / size, ko % size, size) : PASS_MOVE);
+    board_set_ko_old(gPos, PASS_MOVE);
+    board_set_last(gPos, lastMove >= 0 ? michi_point(lastMove / size, lastMove % size, size) : PASS_MOVE);
+    // Not carried across the boundary, and PASS_MOVE is how michi spells "there
+    // is no such move" -- make_list_last_moves_neighbors skips them on it.
+    board_set_last2(gPos, PASS_MOVE);
+    board_set_last3(gPos, PASS_MOVE);
+    // The move count matters for one thing: a playout that inherits `last ==
+    // PASS_MOVE` with moves already played starts as though the opponent had
+    // just passed, which is exactly right when they did. At move zero it must
+    // not, so the count has to be honest.
+    board_set_nmoves(gPos, moveNumber > 0 ? moveNumber : 0);
 
     slist_clear(allpoints);
     FORALL_POINTS(gPos, pt)
@@ -138,11 +161,14 @@ static Point best_non_pass(void)
     return best->move;
 }
 
-int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHalves, int simulations,
-                         uint32_t budgetMs, uint32_t (*nowMs)(void))
+int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHalves, int ko, int lastMove,
+                         int moveNumber, int simulations, uint32_t budgetMs, uint32_t (*nowMs)(void))
 {
     michi_bridge_init();
-    adopt(size, board, toMove, komiHalves);
+    // Idempotent, and here rather than only in init because michi_bridge_forget
+    // gives the stack back when the app closes.
+    michi_stack_alloc(128);
+    adopt(size, board, toMove, komiHalves, ko, lastMove, moveNumber);
 
     // The search in CHUNKS, against a wall clock.
     //
@@ -176,18 +202,24 @@ int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHal
 
     uint32_t began = nowMs != NULL ? nowMs() : 0;
     Point pt = PASS_MOVE;
-    int done = 0;
+    // What was ASKED for bounds the loop; what actually RAN sizes the next
+    // chunk. They differ because tree_search has its own early stops, and using
+    // the asked-for count as the rate's numerator overstates the speed -- which
+    // oversizes the next chunk, which is the one thing the budget cannot
+    // afford to get wrong in that direction.
+    int asked = 0;
     // The first chunk is small because nothing is known yet about how long a
     // simulation costs on this chip at this board size. Every chunk after it is
     // sized from the rate actually measured, which is why the budget holds
     // across both boards without a constant per board.
     int chunk = 8;
-    while (done < simulations) {
-        int want = simulations - done;
+    while (asked < simulations) {
+        int want = simulations - asked;
         if (want > chunk) want = chunk;
         pt = tree_search(gPos, gTree, want, gOwnerMap, gScoreCount, 0);
-        done += want;
+        asked += want;
         if (nowMs == NULL) { chunk = 256; continue; }
+        int done = nplayouts_real > 0 ? nplayouts_real : 1;
 
         uint32_t spent = nowMs() - began;
         if (spent >= budgetMs) break;
@@ -225,3 +257,57 @@ int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHal
 
 int michi_bridge_last_simulations(void) { return gLastSimulations; }
 uint32_t michi_bridge_last_ms(void) { return gLastMs; }
+
+int michi_bridge_ranked(int size, int *out, int max)
+{
+    if (gTree == NULL || gTree->children == NULL || max <= 0) return 0;
+    // Partial selection by visit count, which is what best_move() ranks by and
+    // what the search's own answer is. `max` is a handful, so this is cheaper
+    // than sorting the whole child list.
+    int found = 0;
+    for (int rank = 0 ; rank < max ; rank++) {
+        TreeNode *best = NULL;
+        for (TreeNode **child = gTree->children ; *child != NULL ; child++) {
+            if ((*child)->move == PASS_MOVE || (*child)->move == RESIGN_MOVE) continue;
+            int already = 0;
+            for (int i = 0 ; i < found ; i++) {
+                int row, col;
+                if (our_point((*child)->move, size, &row, &col) && out[i] == row * size + col) { already = 1; break; }
+            }
+            if (already) continue;
+            if (best == NULL || (*child)->v > best->v) best = *child;
+        }
+        if (best == NULL) break;
+        int row, col;
+        if (!our_point(best->move, size, &row, &col)) break;
+        out[found++] = row * size + col;
+    }
+    return found;
+}
+
+void michi_bridge_context(int size, int *ko, int *lastMove, int *moveNumber)
+{
+    int row, col;
+    if (ko != NULL) {
+        Point pt = board_ko(gPos);
+        *ko = (pt != PASS_MOVE && our_point(pt, size, &row, &col)) ? row * size + col : -1;
+    }
+    if (lastMove != NULL) {
+        Point pt = board_last_move(gPos);
+        if (pt == PASS_MOVE) *lastMove = board_nmoves(gPos) > 0 ? -2 : -1;
+        else *lastMove = our_point(pt, size, &row, &col) ? row * size + col : -1;
+    }
+    if (moveNumber != NULL) *moveNumber = (int)board_nmoves(gPos);
+}
+
+void michi_bridge_forget(void)
+{
+    if (!gReady) return;
+    free_tree(gTree);
+    // Replaced rather than nulled: genmove's first act is to free this, and
+    // free_tree dereferences its argument without checking it.
+    gTree = new_tree_node();
+    // And the ladder stack, which is the larger of the two. Re-allocated on the
+    // next genmove.
+    michi_stack_free();
+}
