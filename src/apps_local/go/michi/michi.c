@@ -92,6 +92,15 @@ extern char  buf[BUFLEN];
 static int   disp_ladder;
 static char* colstr  = "@ABCDEFGHJKLMNOPQRST";
 
+// compute_cfg_distances()'s flood-fill queue. Beside the other two scratches
+// and for the same reason: 25KB in a frame on the deepest path the search has.
+static Point *cfg_fringe;
+Point *michi_cfg_fringe(void)
+{
+    if (cfg_fringe == NULL) cfg_fringe = michi_malloc(30 * BOARDSIZE * sizeof(Point));
+    return cfg_fringe;
+}
+
 // How deep the ladder reader is; see MICHI_LADDER_MAX below.
 static int ladder_depth;
 
@@ -138,6 +147,8 @@ void michi_stack_free(void)
     avail_pos = 0;
     free(expand_scratch);
     expand_scratch = NULL;
+    free(cfg_fringe);
+    cfg_fringe = NULL;
     ladder_depth = 0;
 }
 
@@ -156,11 +167,13 @@ int fix_atari_r(Position *pos, Point pt, Slist moves);
 // task gets tens of kilobytes, and the recursion is the one thing the stack
 // budget tool cannot bound (it reports cycles and never sums them).
 //
-// Sixteen plies reads every ladder a nine by nine board can hold and most of
-// what thirteen can. Past it the reader answers "not caught", which is the
+// Twelve plies reads every ladder a nine by nine board can hold and most of
+// what thirteen can, and costs 12 * 1,072 bytes of the search task's stack --
+// which is the arithmetic scripts_local/stack_budget.py cannot do for itself,
+// because it reports cycles and never sums them. Past it the reader answers "not caught", which is the
 // conservative answer: the engine declines to claim a capture it has not
 // proved, rather than crashing on a board somebody is looking at.
-#define MICHI_LADDER_MAX 16
+#define MICHI_LADDER_MAX 12
 static Point read_ladder_attack_r(Position *pos, Point pt, Slist libs);
 
 Point read_ladder_attack(Position *pos, Point pt, Slist libs)
@@ -330,7 +343,9 @@ int fix_atari(Position *pos, Point pt, int singlept_ok
 {
     Block b = point_block(pos, pt);
     int   in_atari=1, maxlibs=3;
-    Point l, libs[5], blocks[256], blibs[5];
+    // FORK CHANGE: MAX_BLOCKS+1, not 256. Same as fix_atari_r above: this is a
+    // Slist of BLOCK ids and there are only MAX_BLOCKS of them.
+    Point l, libs[5], blocks[MAX_BLOCKS+1], blibs[5];
 
     slist_clear(moves); slist_clear(sizes);
     if (singlept_ok && block_size(pos, b) == 1) return 0;

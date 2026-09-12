@@ -785,7 +785,13 @@ void compute_cfg_distances(Position *pos, Point pt, char cfg_map[BOARDSIZE])
 // single points.
 {
     int   head=1, k, tail=0;
-    Point fringe[30*BOARDSIZE], n;
+    Point n;
+    // FORK CHANGE: the fringe is allocated, not a frame. 30*BOARDSIZE Points is
+    // 25,376 bytes at N=13, in ONE frame, on the deepest path the search takes
+    // -- it was the whole of the go_search task's measured 28,752 bytes on its
+    // own. A queue that long is upstream sizing for 19x19 with room to spare;
+    // it is never a reason to give a task twenty-five kilobytes of stack.
+    Point *fringe = michi_cfg_fringe();
 
     memset(cfg_map, -1, BOARDSIZE);
     cfg_map[pt] = 0;

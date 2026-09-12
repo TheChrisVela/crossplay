@@ -18,7 +18,11 @@ MICHI=$SRC/michi
 # would be a demand that upstream write to this fork's standards, and the answer
 # to a warning in vendored code is a patch nobody wants to carry across a sync.
 for unit in board board_util michi patterns params control MichiShim MichiBridge; do
-  "${CC:-cc}" -std=c99 -O2 -w -I$MICHI -c "$MICHI/$unit.c" -o "$BUILD_DIR/$unit.o"
+  # -DMICHI_ASSERTS: upstream's internal consistency checks are OFF on the device
+  # (their failure path is exit(), which there is a reboot, and they cost 4.4KB
+  # of the search task's stack). Here they are free and readable, and one of
+  # them caught an uninitialised board, so the suite keeps them.
+  "${CC:-cc}" -std=c99 -O2 -w -DMICHI_ASSERTS -I$MICHI -c "$MICHI/$unit.c" -o "$BUILD_DIR/$unit.o"
 done
 
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror -O2 -I$SRC test_go.cpp \

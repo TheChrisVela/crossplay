@@ -31,11 +31,28 @@
 // vendored copy was trimmed.
 //
 // So the search gets a task of its own, created when the app opens and ended
-// when it closes, and the loop waits on it. scripts_local/stack_budget.py reads
-// this number and proves the deepest path the compiler can see fits inside it;
-// the ladder recursion, which the compiler cannot bound, is capped at sixteen
-// plies in michi.c for the same reason.
-#define GO_SEARCH_TASK_STACK 28672
+// when it closes, and the loop waits on it.
+//
+// The number is measured, and here is the whole of the arithmetic, because
+// scripts_local/stack_budget.py can only do the first half of it -- it reports
+// cycles and never sums them:
+//
+//   12,192  the deepest ACYCLIC path, from that tool on gh_release_x4pro.
+//           searchLoop -> chooseMove -> genmove -> tree_search -> tree_descend
+//           -> expand (2,816) -> gen_playout_moves_capture -> fix_atari (6,496)
+//           -> one level of the ladder reader.
+//   11,792  eleven more levels of that reader at 1,072 bytes each
+//           (read_ladder_attack 32 + read_ladder_attack_r 448 + fix_atari_r
+//           592), which is MICHI_LADDER_MAX = 12 in michi.c.
+//    1,760  the deepest thing under the last level, undo_move.
+//   ------
+//   25,744  against 32,768, leaving about 7KB.
+//
+// Re-measure rather than trust this if any of those frames moves:
+//   PLATFORMIO_BUILD_FLAGS="-fstack-usage -fcallgraph-info=su" \
+//   PLATFORMIO_BUILD_CACHE_DIR= ./scripts_local/check.sh --flash gh_release_x4pro
+//   python3 scripts_local/stack_budget.py --build-dir .pio/build/gh_release_x4pro
+#define GO_SEARCH_TASK_STACK 32768
 
 std::unique_ptr<Activity> GoActivity::create(GfxRenderer& renderer, MappedInputManager& mappedInput) {
   return makeUniqueNoThrow<GoActivity>(renderer, mappedInput);

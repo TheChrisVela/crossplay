@@ -74,7 +74,13 @@ TASKS = [
         "go_search",
         "GO_SEARCH_TASK_STACK",
         "src/apps_local/go/GoActivity.cpp",
-        "GoActivity::searchLoop",
+        # The return type is part of the needle deliberately. `match()` is a
+        # substring test over the readable signature, and the lambda this
+        # function hands the engine as a clock is spelled
+        # "...GoActivity::searchLoop()::<lambda()>::_FUN()" -- which contains
+        # the bare name, has the same 32-byte frame, and sorted first. The
+        # tool then reported 64 bytes for a task whose real path is thousands.
+        "void GoActivity::searchLoop()",
         None,
     ),
     (

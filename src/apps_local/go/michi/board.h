@@ -122,6 +122,10 @@ void   copy_to_large_board(Position *pos);
 int    env4_OK(Position *pos);
 void   fatal_error(const char *msg);
 void   init_large_board(void);
+// FORK CHANGE: compute_cfg_distances()'s flood-fill queue, allocated rather
+// than a 25KB frame. Defined in michi.c beside the other search scratches;
+// declared here because board.c does not include michi.h.
+Point* michi_cfg_fringe(void);
 void   log_fmt_i(char type, const char *msg, int n);
 void   log_fmt_p(char type, const char *msg, Point i);
 void   log_fmt_s(char type, const char *msg, const char *s);
@@ -212,7 +216,21 @@ __INLINE__ int   point_nlibs(Position *pos, Point pt)
     int _tmp=random_int(_k+1); SWAP(T, l[_k], l[_tmp]); \
 }
 // Assertion check
-#ifdef NDEBUG
+//
+// FORK CHANGE: OFF unless MICHI_ASSERTS is defined, where upstream has them on
+// unless NDEBUG is. Two reasons, and the second is the one that decided it.
+//
+// These are upstream's internal consistency checks, and their failure path is
+// exit() -- which on this device is a reboot, so an assert that fires is no
+// better than the corruption it found. And they are not free: the path through
+// undo_move -> all_blocks_OK -> check_block is 4,400 bytes of the search task's
+// stack, on a chip where that task's whole budget is measured in tens of
+// kilobytes.
+//
+// host-tests/go/run.sh defines MICHI_ASSERTS, so the suite keeps them. That is
+// where they can actually be read, and where one of them caught the
+// uninitialised large board.
+#if defined(NDEBUG) || !defined(MICHI_ASSERTS)
   #define michi_assert(pos, condition)
 #else
   #define michi_assert(pos, condition)                                        \
