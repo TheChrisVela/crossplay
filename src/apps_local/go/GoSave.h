@@ -26,19 +26,25 @@ namespace gosave {
 // A game that loads and is wrong is worse than one that does not load. What it
 // costs is the record, which is two integers.
 //
+// 4 added the board size, in three places: the setting, the size of the game in
+// progress, and the size of the last finished position the front door draws.
+// 3 added the handicap, which became a setting of its own.
 // 2 added `Game::accepted`, which is who has agreed the count. A v1 file has
 // one fewer number on the line and is refused rather than misread: the record
 // in it is a handful of integers and the game is one position, and neither is
 // worth a migration nobody will ever test again.
-constexpr int kVersion = 2;
+constexpr int kVersion = 4;
 
 struct Save {
   int wins = 0;
   int losses = 0;
 
-  // The last finished game, for the front door's ornament.
+  // The last finished game, for the front door's ornament. One byte a point
+  // here rather than the game's packed pair of bits: this is a picture, not a
+  // position, and nothing plays on it.
   bool hasHistory = false;
-  uint8_t lastPoints[go::kPoints] = {};
+  uint8_t lastPoints[go::kMaxPoints] = {};
+  uint8_t lastSize = go::kSmallSize;
   bool lastWon = false;
   int lastMarginHalves = 0;
 
@@ -46,6 +52,11 @@ struct Save {
   go::Opponent opponent = go::Opponent::Computer;
   go::Level level = go::Level::Medium;
   uint8_t playAs = go::kBlack;
+  int handicap = 0;
+  // The board the NEXT new game is played on. Separate from `game.size`, which
+  // is the board the game in progress is already on: changing the setting must
+  // not reinterpret a position under way.
+  int boardSize = go::kSmallSize;
 
   // A game part-played. `inProgress` is false when there is nothing to resume,
   // and `game` is then not read at all.

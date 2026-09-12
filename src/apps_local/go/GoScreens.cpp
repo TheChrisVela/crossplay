@@ -11,18 +11,25 @@ namespace goui {
 
 namespace {
 
-// The grid pitch, and with it every other number on the board. Nine lines at 49
-// gives a 44px stone with 5px of air, which is a fingertip; nineteen lines
-// would give 23px, which is why this game is nine by nine and says so.
-constexpr int16_t kPitch = 49;
+// The board is the SAME square whichever size is being played, and only the
+// pitch inside it changes. That is what keeps the seat bands, the buttons and
+// the frame in one place across both: a board that grew with its size would
+// move every other element on the screen and need two of every number here.
+//
+// Nine lines at 49 gives a 44px stone, which is a fingertip. Thirteen at 33
+// gives 28px, which is under one -- and is playable anyway because a stone goes
+// down in two taps and the first can be moved. Nineteen would give 23px with no
+// pad left at all, which is why it is not offered.
+constexpr int16_t kBoardSide = 448;
 constexpr int16_t kFrame = toybox::kBoardFrame;
+
+constexpr int16_t pitchFor(const int size) { return size == go::kSmallSize ? 49 : 33; }
+constexpr int16_t gridSpan(const int size) { return static_cast<int16_t>(pitchFor(size) * (size - 1)); }
 // Room outside the outermost line, so an edge stone has air round it rather
 // than sitting against the frame. It has to exceed the stone RADIUS: at half a
-// pitch it was two pixels and the top row visibly touched the border.
-constexpr int16_t kPad = 28;
-
-constexpr int16_t kGridSpan = static_cast<int16_t>(kPitch * (go::kSize - 1));
-constexpr int16_t kBoardSide = static_cast<int16_t>(kGridSpan + kPad * 2);
+// pitch it was two pixels and the top row visibly touched the border. Derived
+// from the square rather than chosen, so the two can never disagree.
+constexpr int16_t padFor(const int size) { return static_cast<int16_t>((kBoardSide - gridSpan(size)) / 2); }
 
 // A seat band's height, variant 2 only.
 constexpr int16_t kSeatBand = 58;
@@ -34,8 +41,10 @@ int16_t boardTop() {
   return static_cast<int16_t>(toybox::kChromeHeight + toybox::kGutter + kSeatBand + toybox::kGutter + kFrame);
 }
 
-int16_t firstLineX(const fui::DeviceContext& device) { return static_cast<int16_t>(boardLeft(device) + kPad); }
-int16_t firstLineY() { return static_cast<int16_t>(boardTop() + kPad); }
+int16_t firstLineX(const fui::DeviceContext& device, const int size) {
+  return static_cast<int16_t>(boardLeft(device) + padFor(size));
+}
+int16_t firstLineY(const int size) { return static_cast<int16_t>(boardTop() + padFor(size)); }
 
 // A stone, drawn the way the design language says a light shape has to be: the
 // silhouette knocked out in paper first, then stroked, or the grid line under a
@@ -48,10 +57,15 @@ void stone(toybox::Screen& screen, const int16_t cx, const int16_t cy, const int
 
 // The mark on the stone just played. Go without it is a memory test: on a board
 // of identical discs there is no other way to see what moved.
-void lastMoveMark(toybox::Screen& screen, const int16_t cx, const int16_t cy, const uint8_t colour) {
+void lastMoveMark(toybox::Screen& screen, const int16_t cx, const int16_t cy, const int16_t radius,
+                  const uint8_t colour) {
   const fui::Color ink = colour == go::kBlack ? fui::Color::White : fui::Color::Black;
-  toybox::disc(screen, cx, cy, 8, ink);
-  toybox::disc(screen, cx, cy, 5, colour == go::kBlack ? fui::Color::Black : fui::Color::White);
+  // Scaled off the stone rather than fixed, or the mark that is a ring on a
+  // nine by nine board is a filled blob on a thirteen by thirteen one.
+  const int16_t outer = static_cast<int16_t>(radius * 8 / 22);
+  const int16_t inner = static_cast<int16_t>(radius * 5 / 22);
+  toybox::disc(screen, cx, cy, outer, ink);
+  toybox::disc(screen, cx, cy, inner, colour == go::kBlack ? fui::Color::Black : fui::Color::White);
 }
 
 // The board's own border, where the variant has one. Drawn flush against the
@@ -66,78 +80,86 @@ void drawFrame(toybox::Screen& screen, const fui::DeviceContext& device) {
   screen.target().stroke(frame, fui::Paint::solid(fui::Color::Black), kFrame);
 }
 
-void drawGrid(toybox::Screen& screen, const fui::DeviceContext& device) {
-  const int16_t x0 = firstLineX(device);
-  const int16_t y0 = firstLineY();
-  const int16_t x1 = static_cast<int16_t>(x0 + kGridSpan);
-  const int16_t y1 = static_cast<int16_t>(y0 + kGridSpan);
+void drawGrid(toybox::Screen& screen, const fui::DeviceContext& device, const int size) {
+  const int16_t pitch = pitchFor(size);
+  const int16_t span = gridSpan(size);
+  const int16_t x0 = firstLineX(device, size);
+  const int16_t y0 = firstLineY(size);
 
-  for (int i = 0; i < go::kSize; ++i) {
+  for (int i = 0; i < size; ++i) {
     // The outermost lines are heavier, because on a real board they ARE the
-    // edge. On variant 3 they are the only edge there is.
-    const bool outer = i == 0 || i == go::kSize - 1;
+    // edge.
+    const bool outer = i == 0 || i == size - 1;
     const int16_t weight = outer ? toybox::kRule : toybox::kHairline;
-    const int16_t x = static_cast<int16_t>(x0 + i * kPitch);
-    const int16_t y = static_cast<int16_t>(y0 + i * kPitch);
+    const int16_t x = static_cast<int16_t>(x0 + i * pitch);
+    const int16_t y = static_cast<int16_t>(y0 + i * pitch);
     screen.target().fill(
-        fui::makeRect(static_cast<int16_t>(x - weight / 2), y0, weight, static_cast<int16_t>(kGridSpan + 1)),
+        fui::makeRect(static_cast<int16_t>(x - weight / 2), y0, weight, static_cast<int16_t>(span + 1)),
         fui::Paint::solid(fui::Color::Black));
     screen.target().fill(
-        fui::makeRect(x0, static_cast<int16_t>(y - weight / 2), static_cast<int16_t>(kGridSpan + 1), weight),
+        fui::makeRect(x0, static_cast<int16_t>(y - weight / 2), static_cast<int16_t>(span + 1), weight),
         fui::Paint::solid(fui::Color::Black));
   }
-  (void)x1;
-  (void)y1;
 
-  // Star points. Five of them on a nine by nine, at the 3-3s and the middle,
-  // and they are not decoration: they are how a player reads where they are on
-  // a board with no coordinates.
-  constexpr int kStars[5][2] = {{2, 2}, {2, 6}, {6, 2}, {6, 6}, {4, 4}};
-  for (const auto& star : kStars) {
-    toybox::disc(screen, static_cast<int16_t>(x0 + star[1] * kPitch), static_cast<int16_t>(y0 + star[0] * kPitch), 5,
+  // Star points. Five on either board, at the corner stars and the middle, and
+  // they are not decoration: they are how a player reads where they are on a
+  // board with no coordinates. Nine takes them at the 3-3 points, thirteen at
+  // the 4-4s, which is where the handicap stones go -- one fact, two readers.
+  const int near = size == go::kSmallSize ? 2 : 3;
+  const int far = size - 1 - near;
+  const int middle = size / 2;
+  const int stars[5][2] = {{near, near}, {near, far}, {far, near}, {far, far}, {middle, middle}};
+  const int16_t dot = size == go::kSmallSize ? 5 : 4;
+  for (const auto& star : stars) {
+    toybox::disc(screen, static_cast<int16_t>(x0 + star[1] * pitch), static_cast<int16_t>(y0 + star[0] * pitch), dot,
                  fui::Color::Black);
   }
 }
 
 void drawStones(toybox::Screen& screen, const fui::DeviceContext& device, const go::Game& game) {
-  const int16_t radius = stoneRadius();
-  for (int point = 0; point < go::kPoints; ++point) {
-    if (!go::isStone(game.point[point])) continue;
+  const int size = game.size;
+  const int16_t radius = stoneRadius(size);
+  const int points = game.points();
+  for (int point = 0; point < points; ++point) {
+    const uint8_t here = game.at(point);
+    if (!go::isStone(here)) continue;
     int16_t cx = 0;
     int16_t cy = 0;
-    stoneCentre(device, point, cx, cy);
-    stone(screen, cx, cy, radius, game.point[point]);
+    stoneCentre(device, size, point, cx, cy);
+    stone(screen, cx, cy, radius, here);
   }
-  if (game.lastMove < go::kPoints && go::isStone(game.point[game.lastMove])) {
+  if (game.lastMove < points && go::isStone(game.at(game.lastMove))) {
     int16_t cx = 0;
     int16_t cy = 0;
-    stoneCentre(device, game.lastMove, cx, cy);
-    lastMoveMark(screen, cx, cy, game.point[game.lastMove]);
+    stoneCentre(device, size, game.lastMove, cx, cy);
+    lastMoveMark(screen, cx, cy, radius, game.at(game.lastMove));
   }
 }
 
 // The stone that is aimed at but not yet played: dithered, so it is plainly not
 // on the board yet, with the fork's corner brackets round it saying that a
 // second tap is what puts it there.
-void drawAim(toybox::Screen& screen, const fui::DeviceContext& device, const int point, const uint8_t colour) {
-  if (point < 0 || point >= go::kPoints) return;
+void drawAim(toybox::Screen& screen, const fui::DeviceContext& device, const int size, const int point,
+             const uint8_t colour) {
+  if (point < 0 || point >= size * size) return;
   int16_t cx = 0;
   int16_t cy = 0;
-  stoneCentre(device, point, cx, cy);
-  const int16_t radius = stoneRadius();
+  stoneCentre(device, size, point, cx, cy);
+  const int16_t pitch = pitchFor(size);
+  const int16_t radius = stoneRadius(size);
   toybox::disc(screen, cx, cy, radius, fui::Color::Black);
   toybox::disc(screen, cx, cy, static_cast<int16_t>(radius - 3),
                fui::Paint::dither(colour == go::kBlack ? fui::Color::DarkGray : fui::Color::LightGray));
   const fui::Rect box =
-      fui::makeRect(static_cast<int16_t>(cx - kPitch / 2), static_cast<int16_t>(cy - kPitch / 2), kPitch, kPitch);
-  toybox::bracket(screen, box, 12, 4);
+      fui::makeRect(static_cast<int16_t>(cx - pitch / 2), static_cast<int16_t>(cy - pitch / 2), pitch, pitch);
+  toybox::bracket(screen, box, static_cast<int16_t>(pitch / 4), static_cast<int16_t>(size == go::kSmallSize ? 4 : 3));
 }
 
-// A miniature of a finished position, for the front door's ornament.
-void miniBoard(toybox::Screen& screen, const int16_t left, const int16_t top, const int16_t pitch,
+// A miniature of a position, for the front door's ornament.
+void miniBoard(toybox::Screen& screen, const int16_t left, const int16_t top, const int16_t pitch, const int size,
                const uint8_t* points) {
-  const int16_t span = static_cast<int16_t>(pitch * (go::kSize - 1));
-  for (int i = 0; i < go::kSize; ++i) {
+  const int16_t span = static_cast<int16_t>(pitch * (size - 1));
+  for (int i = 0; i < size; ++i) {
     const int16_t x = static_cast<int16_t>(left + i * pitch);
     const int16_t y = static_cast<int16_t>(top + i * pitch);
     screen.target().fill(fui::makeRect(x, top, toybox::kHairline, static_cast<int16_t>(span + 1)),
@@ -146,10 +168,10 @@ void miniBoard(toybox::Screen& screen, const int16_t left, const int16_t top, co
                          fui::Paint::solid(fui::Color::Black));
   }
   const int16_t radius = static_cast<int16_t>(pitch / 2);
-  for (int point = 0; point < go::kPoints; ++point) {
+  for (int point = 0; point < size * size; ++point) {
     if (!go::isStone(points[point])) continue;
-    const int16_t cx = static_cast<int16_t>(left + go::colOf(point) * pitch);
-    const int16_t cy = static_cast<int16_t>(top + go::rowOf(point) * pitch);
+    const int16_t cx = static_cast<int16_t>(left + go::colOf(size, point) * pitch);
+    const int16_t cy = static_cast<int16_t>(top + go::rowOf(size, point) * pitch);
     toybox::disc(screen, cx, cy, radius, fui::Color::Black);
     toybox::disc(screen, cx, cy, static_cast<int16_t>(radius - 2),
                  points[point] == go::kBlack ? fui::Color::Black : fui::Color::White);
@@ -185,30 +207,32 @@ void toyboxChrome(toybox::Screen& screen, const char* title, const char* rightLa
 
 }  // namespace
 
-int16_t stoneRadius() { return static_cast<int16_t>(kPitch / 2 - 2); }
+int16_t stoneRadius(const int size) { return static_cast<int16_t>(pitchFor(size) / 2 - 2); }
 
-void stoneCentre(const fui::DeviceContext& device, const int point, int16_t& cx, int16_t& cy) {
-  cx = static_cast<int16_t>(firstLineX(device) + go::colOf(point) * kPitch);
-  cy = static_cast<int16_t>(firstLineY() + go::rowOf(point) * kPitch);
+void stoneCentre(const fui::DeviceContext& device, const int size, const int point, int16_t& cx, int16_t& cy) {
+  cx = static_cast<int16_t>(firstLineX(device, size) + go::colOf(size, point) * pitchFor(size));
+  cy = static_cast<int16_t>(firstLineY(size) + go::rowOf(size, point) * pitchFor(size));
 }
 
-bool pointAt(const fui::DeviceContext& device, const int x, const int y, int& point) {
+bool pointAt(const fui::DeviceContext& device, const int size, const int x, const int y, int& point) {
   // The whole box belongs to the nearest intersection, padding included, so an
   // edge point is as easy to hit as a middle one. Computing a small target
   // round each line instead leaves dead gutters between the points, which on a
   // touch board reads as the game ignoring taps.
+  const int16_t pitch = pitchFor(size);
+  const int16_t pad = padFor(size);
   const int dx = x - boardLeft(device);
   const int dy = y - boardTop();
   if (dx < 0 || dy < 0 || dx >= kBoardSide || dy >= kBoardSide) return false;
-  int col = (dx - kPad + kPitch / 2) / kPitch;
-  int row = (dy - kPad + kPitch / 2) / kPitch;
-  if (dx < kPad) col = 0;
-  if (dy < kPad) row = 0;
+  int col = (dx - pad + pitch / 2) / pitch;
+  int row = (dy - pad + pitch / 2) / pitch;
+  if (dx < pad) col = 0;
+  if (dy < pad) row = 0;
   if (col < 0) col = 0;
   if (row < 0) row = 0;
-  if (col > go::kSize - 1) col = go::kSize - 1;
-  if (row > go::kSize - 1) row = go::kSize - 1;
-  point = go::pointAt(row, col);
+  if (col > size - 1) col = size - 1;
+  if (row > size - 1) row = size - 1;
+  point = go::pointAt(size, row, col);
   return true;
 }
 
@@ -258,32 +282,60 @@ void buildMenu(toybox::Screen& screen, const MenuModel& model) {
       fui::makeRect(content.x, static_cast<int16_t>(content.bottom() - listHeight), content.width, listHeight);
   screen.list(list, listHeight, fui::LayoutAnchor::Bottom);
 
-  toybox::iconAtRowRight(screen, listBand, static_cast<int>(MenuRow::Play), 0, icon_go_play_32,
-                         selected == static_cast<int>(MenuRow::Play));
+  // The RESUME row is SPLIT: the row resumes, and a square on its end throws
+  // the game away. Drawn after the list so it wins the hit test, which runs
+  // backwards through the table -- the row underneath it stays registered at
+  // full width and would otherwise swallow the tap.
+  const int16_t rowHeight = screen.theme().rowHeight;
+  if (model.inProgress) {
+    const fui::Rect square =
+        fui::makeRect(static_cast<int16_t>(listBand.right() - rowHeight), listBand.y, rowHeight, rowHeight);
+    // Paper on the row whether or not the row is selected. A destructive
+    // control that inverts with its neighbour stops being distinguishable from
+    // it at exactly the moment it matters.
+    screen.target().fill(square, fui::Paint::solid(fui::Color::White));
+    screen.target().stroke(square, fui::Paint::solid(fui::Color::Black), toybox::kRule);
+    const fui::Rect mark = fui::makeRect(static_cast<int16_t>(square.x + (rowHeight - toybox::kIconSize) / 2),
+                                         static_cast<int16_t>(square.y + (rowHeight - toybox::kIconSize) / 2),
+                                         toybox::kIconSize, toybox::kIconSize);
+    screen.target().bitmap(mark, fui::bitmapFromIcon(icon_go_trash_32), fui::BitmapMode::Contain,
+                           fui::Paint::solid(fui::Color::Black));
+    screen.frame().hit(square, ActionDiscard, 0);
+  } else {
+    toybox::iconAtRowRight(screen, listBand, static_cast<int>(MenuRow::Play), 0, icon_go_play_32,
+                           selected == static_cast<int>(MenuRow::Play));
+  }
   toybox::iconAtRowRight(screen, listBand, static_cast<int>(MenuRow::PlayNearby), 0, linkui::nearbyMark(),
                          selected == static_cast<int>(MenuRow::PlayNearby));
   toybox::iconAtRowRight(screen, listBand, static_cast<int>(MenuRow::Settings), 0, icon_go_settings_32,
                          selected == static_cast<int>(MenuRow::Settings));
 
-  if (!model.hasHistory || model.lastPoints == nullptr) return;
+  if (model.boardPoints == nullptr) return;
 
-  // The last game's final position. Ornament made of the app's own material
-  // carrying the app's own data: a screenshot of it is different on every
-  // device, which is the whole test. It grew when the front door lost three
-  // rows, because the space a layout gains has to go somewhere deliberate.
-  constexpr int16_t kMini = 30;
-  const int16_t span = static_cast<int16_t>(kMini * (go::kSize - 1));
+  // The board itself, and it is the GAME IN PROGRESS when there is one. This
+  // space held the last finished game only, so a device with a game half played
+  // showed nothing at all on the screen the player reaches it from. Ornament
+  // made of the app's own material carrying the app's own data: a screenshot of
+  // it is different on every device, which is the whole test.
+  const int miniSize = model.boardSize == go::kLargeSize ? go::kLargeSize : go::kSmallSize;
+  const int16_t kMiniSpan = 240;
+  const int16_t mini = static_cast<int16_t>(kMiniSpan / (miniSize - 1));
+  const int16_t span = static_cast<int16_t>(mini * (miniSize - 1));
   const int16_t areaTop = static_cast<int16_t>(line.bottom() + 6 + toybox::kRule);
   const int16_t room = static_cast<int16_t>(listBand.y - areaTop);
   const int16_t blockH = static_cast<int16_t>(span + 24 + 12 + 24);
   const int16_t top = static_cast<int16_t>(areaTop + (room > blockH ? (room - blockH) / 2 : 12));
   const fui::DeviceContext device = screen.device();
-  miniBoard(screen, static_cast<int16_t>((device.width - span) / 2), static_cast<int16_t>(top + 12), kMini,
-            model.lastPoints);
+  miniBoard(screen, static_cast<int16_t>((device.width - span) / 2), static_cast<int16_t>(top + 12), mini, miniSize,
+            model.boardPoints);
 
   char caption[48];
-  std::snprintf(caption, sizeof(caption), "LAST GAME: %s BY %d.%d", model.lastWon ? "WON" : "LOST",
-                model.lastMarginHalves / 2, (model.lastMarginHalves % 2) * 5);
+  if (model.inProgress) {
+    std::snprintf(caption, sizeof(caption), "IN PROGRESS   %dx%d   MOVE %d", miniSize, miniSize, model.moveNumber);
+  } else {
+    std::snprintf(caption, sizeof(caption), "LAST GAME: %s BY %d.%d", model.lastWon ? "WON" : "LOST",
+                  model.lastMarginHalves / 2, (model.lastMarginHalves % 2) * 5);
+  }
   fui::TextStyle cap;
   cap.font = toybox::kTileFont;
   cap.align = fui::TextAlign::Center;
@@ -321,15 +373,39 @@ void buildSettings(toybox::Screen& screen, const SettingsModel& model) {
   rows[static_cast<int>(SettingsRow::Level)].actionValue = static_cast<int16_t>(SettingsRow::Level);
   rows[static_cast<int>(SettingsRow::Level)].icon = fui::bitmapFromIcon(icon_go_level_32);
 
+  // The handicap is its OWN row, and that is the point of it. It used to be a
+  // property of the level, so EASY meant both "a weaker opponent" and "two free
+  // stones" and neither could be had without the other.
+  char handicap[16];
+  if (model.handicap > 0) {
+    std::snprintf(handicap, sizeof(handicap), "%d STONES", model.handicap);
+  } else {
+    std::snprintf(handicap, sizeof(handicap), "NONE");
+  }
+  rows[static_cast<int>(SettingsRow::Handicap)].label = "HANDICAP";
+  rows[static_cast<int>(SettingsRow::Handicap)].value = model.opponent == go::Opponent::Computer ? handicap : "--";
+  rows[static_cast<int>(SettingsRow::Handicap)].enabled = model.opponent == go::Opponent::Computer;
+  rows[static_cast<int>(SettingsRow::Handicap)].actionValue = static_cast<int16_t>(SettingsRow::Handicap);
+  rows[static_cast<int>(SettingsRow::Handicap)].icon = fui::bitmapFromIcon(icon_go_handicap_32);
+
   const bool colourIsYours = model.opponent == go::Opponent::Computer && model.handicap == 0;
   rows[static_cast<int>(SettingsRow::PlayAs)].label = "YOU PLAY";
   rows[static_cast<int>(SettingsRow::PlayAs)].value = model.opponent != go::Opponent::Computer ? "--"
-                                                      : model.handicap > 0                     ? "BLACK +2"
+                                                      : model.handicap > 0                     ? "BLACK"
                                                       : model.playAs == go::kBlack             ? "BLACK"
                                                                                                : "WHITE";
   rows[static_cast<int>(SettingsRow::PlayAs)].enabled = colourIsYours;
   rows[static_cast<int>(SettingsRow::PlayAs)].actionValue = static_cast<int16_t>(SettingsRow::PlayAs);
   rows[static_cast<int>(SettingsRow::PlayAs)].icon = fui::bitmapFromIcon(icon_go_colour_32);
+
+  // The board. Always live, because two people sharing one device choose it
+  // too, and it takes effect on the next NEW game rather than under this one.
+  char board[16];
+  std::snprintf(board, sizeof(board), "%dx%d", model.boardSize, model.boardSize);
+  rows[static_cast<int>(SettingsRow::Board)].label = "BOARD";
+  rows[static_cast<int>(SettingsRow::Board)].value = board;
+  rows[static_cast<int>(SettingsRow::Board)].actionValue = static_cast<int16_t>(SettingsRow::Board);
+  rows[static_cast<int>(SettingsRow::Board)].icon = fui::bitmapFromIcon(icon_go_board_32);
 
   const int selected = model.selected < 0 ? 0 : model.selected;
   fui::ListProps list;
@@ -348,10 +424,11 @@ void buildSettings(toybox::Screen& screen, const SettingsModel& model) {
   // subtitle on a value row is set at the title cut and about twenty characters
   // is all there is, which is not enough to say anything true.
   if (model.opponent != go::Opponent::Computer) return;
-  const char* explain = model.handicap > 0 ? "EASY SPOTS YOU TWO STONES AND MISSES THINGS ON THE FAR SIDE OF THE BOARD."
+  const char* explain = model.level == go::Level::Easy
+                            ? "IT LOOKS ONE FIGHT AHEAD AND MISSES THINGS ON THE FAR SIDE OF THE BOARD."
                         : model.level == go::Level::Medium
-                            ? "AN EVEN GAME. IT SEES EVERYTHING AND DOES NOT ALWAYS PLAY ITS BEST MOVE."
-                            : "AN EVEN GAME, AND IT THINKS FOR AS LONG AS IT IS ALLOWED.";
+                            ? "IT SEES THE WHOLE BOARD AND DOES NOT ALWAYS PLAY ITS BEST MOVE."
+                            : "IT THINKS FOR AS LONG AS IT IS ALLOWED, WHICH IS UNDER FIVE SECONDS A MOVE.";
   fui::TextStyle body;
   body.font = toybox::kTileFont;
   body.align = fui::TextAlign::Left;
@@ -453,9 +530,9 @@ void buildBoard(toybox::Screen& screen, const BoardModel& model) {
            theirSeat, model.game.capturedBy[youAreBlack ? go::kWhite : go::kBlack]);
 
   drawFrame(screen, device);
-  drawGrid(screen, device);
+  drawGrid(screen, device, model.game.size);
   drawStones(screen, device, model.game);
-  if (model.aimed != go::kNothingAimed) drawAim(screen, device, model.aimed, model.seat);
+  if (model.aimed != go::kNothingAimed) drawAim(screen, device, model.game.size, model.aimed, model.seat);
 
   seatBand(static_cast<int16_t>(boardTop() + kBoardSide + kFrame + toybox::kGutter),
            youAreBlack ? go::kBlack : go::kWhite, yourSeat,
@@ -497,18 +574,21 @@ void buildCount(toybox::Screen& screen, const CountModel& model) {
   resume.borderEdges = fui::EdgesNone;
   screen.button(resume, fui::makeRect(static_cast<int16_t>(bottom.right() - 140), bottom.y, 140, bottom.height));
 
+  const int size = model.game.size;
+  const int points = model.game.points();
   drawFrame(screen, device);
-  drawGrid(screen, device);
+  drawGrid(screen, device, size);
 
   // Dead stones are drawn as ghosts and the territory they concede is marked
   // like any other. Tapping a group flips it, which is the whole negotiation:
   // the machine's opinion is a starting point, not a verdict.
-  const int16_t radius = stoneRadius();
-  for (int point = 0; point < go::kPoints; ++point) {
+  const int16_t radius = stoneRadius(size);
+  const int16_t markHalf = static_cast<int16_t>(size == go::kSmallSize ? 9 : 6);
+  for (int point = 0; point < points; ++point) {
     int16_t cx = 0;
     int16_t cy = 0;
-    stoneCentre(device, point, cx, cy);
-    const uint8_t here = model.game.point[point];
+    stoneCentre(device, size, point, cx, cy);
+    const uint8_t here = model.game.at(point);
     if (go::isStone(here)) {
       if (go::marked(model.game.dead, point)) {
         toybox::disc(screen, cx, cy, radius, fui::Paint::dither(fui::Color::LightGray));
@@ -525,7 +605,8 @@ void buildCount(toybox::Screen& screen, const CountModel& model) {
     // A small square, not a stone: a point that is somebody's is not a point
     // somebody has played on, and drawing it as a stone would make a counted
     // board unreadable.
-    const fui::Rect box = fui::makeRect(static_cast<int16_t>(cx - 9), static_cast<int16_t>(cy - 9), 18, 18);
+    const fui::Rect box = fui::makeRect(static_cast<int16_t>(cx - markHalf), static_cast<int16_t>(cy - markHalf),
+                                        static_cast<int16_t>(markHalf * 2), static_cast<int16_t>(markHalf * 2));
     if (owner == go::kBlack) {
       screen.target().fill(box, fui::Paint::solid(fui::Color::Black));
     } else {
@@ -536,14 +617,16 @@ void buildCount(toybox::Screen& screen, const CountModel& model) {
 
   // Territory marks over dead stones too, so a dead group visibly becomes the
   // other side's ground rather than merely fading.
-  for (int point = 0; point < go::kPoints; ++point) {
+  const int16_t ghostHalf = static_cast<int16_t>(markHalf - 2);
+  for (int point = 0; point < points; ++point) {
     if (!go::marked(model.game.dead, point)) continue;
     const uint8_t owner = model.owner[point];
     if (owner == go::kEmpty) continue;
     int16_t cx = 0;
     int16_t cy = 0;
-    stoneCentre(device, point, cx, cy);
-    const fui::Rect box = fui::makeRect(static_cast<int16_t>(cx - 7), static_cast<int16_t>(cy - 7), 14, 14);
+    stoneCentre(device, size, point, cx, cy);
+    const fui::Rect box = fui::makeRect(static_cast<int16_t>(cx - ghostHalf), static_cast<int16_t>(cy - ghostHalf),
+                                        static_cast<int16_t>(ghostHalf * 2), static_cast<int16_t>(ghostHalf * 2));
     if (owner == go::kBlack) {
       screen.target().fill(box, fui::Paint::solid(fui::Color::Black));
     } else {
@@ -601,21 +684,25 @@ void buildResult(toybox::Screen& screen, const ResultModel& model) {
   done.borderEdges = fui::EdgesNone;
   screen.button(done, fui::makeRect(static_cast<int16_t>(bottom.right() - 140), bottom.y, 140, bottom.height));
 
+  const int size = model.game.size;
+  const int points = model.game.points();
   drawFrame(screen, device);
-  drawGrid(screen, device);
-  const int16_t radius = stoneRadius();
-  for (int point = 0; point < go::kPoints; ++point) {
+  drawGrid(screen, device, size);
+  const int16_t radius = stoneRadius(size);
+  const int16_t markHalf = static_cast<int16_t>(size == go::kSmallSize ? 9 : 6);
+  for (int point = 0; point < points; ++point) {
     int16_t cx = 0;
     int16_t cy = 0;
-    stoneCentre(device, point, cx, cy);
-    const uint8_t here = model.game.point[point];
+    stoneCentre(device, size, point, cx, cy);
+    const uint8_t here = model.game.at(point);
     if (go::isStone(here) && !go::marked(model.game.dead, point)) {
       stone(screen, cx, cy, radius, here);
       continue;
     }
     const uint8_t owner = model.owner[point];
     if (owner == go::kEmpty) continue;
-    const fui::Rect box = fui::makeRect(static_cast<int16_t>(cx - 9), static_cast<int16_t>(cy - 9), 18, 18);
+    const fui::Rect box = fui::makeRect(static_cast<int16_t>(cx - markHalf), static_cast<int16_t>(cy - markHalf),
+                                        static_cast<int16_t>(markHalf * 2), static_cast<int16_t>(markHalf * 2));
     if (owner == go::kBlack) {
       screen.target().fill(box, fui::Paint::solid(fui::Color::Black));
     } else {

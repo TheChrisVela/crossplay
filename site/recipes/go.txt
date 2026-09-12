@@ -12,18 +12,23 @@
 # games that grows every few weeks.
 #
 #   CROSSPLAY_AUTOSTART=GO ./scripts_local/sim-shot.sh \
-#     '2500:TAP:240,605;5500:TAP:240,404;9000:QUIT' '7500:qa-artifacts/go-site.bmp'
+#     '2500:TAP:240,605;5500:TAP:289,398;9000:QUIT' '7500:qa-artifacts/go-site.bmp'
 #
 # then downsample qa-artifacts/go-site.png from 960x1600 to 480x800 (LANCZOS).
 
 input:
-  2500:TAP:240,605      # RESUME GAME on the front door
-  5500:TAP:240,404      # aim the centre point -- one tap, so nothing is played
+  2500:TAP:240,605      # RESUME GAME on the front door, left of the trash square
+  5500:TAP:289,398      # aim (4,5), beside White's wall -- one tap, so nothing is played
   9000:QUIT
 
 shot:
   7500:qa-artifacts/go-site.bmp
 
+# The aimed point is (4,5) and NOT the centre: michi-c2 plays tengen early on a
+# nine by nine board, so the middle of any real position it produced is already
+# occupied. The one before it aimed there and the recipe silently stopped
+# showing the thing it exists to show.
+#
 # NOT reproducible byte-for-byte, and the reason is worth knowing. The position
 # comes from fs_agent/.crosspoint/go.sav, a real game the real engine played
 # against itself and stopped at move 34; the engine seeds itself from millis()

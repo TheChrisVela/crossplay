@@ -35,6 +35,16 @@ rasterised from them into `src/apps_local/chess/ChessPieces.h` at authoring
 time. Full text and the source SVGs at `assets_local/pieces/celtic/`, with the
 choice documented in `docs/design-language.md`.
 
+**michi-c2**, MIT, Copyright (c) Denis Blumstein, from
+[db3108/michi-c2](https://github.com/db3108/michi-c2), a C recoding of Petr
+Baudis's [michi](https://github.com/pasky/michi). Go's opponent is this engine;
+its core is vendored at `src/apps_local/go/michi/` with the three fork changes
+marked in the source. **No repository in the Michi family ships a LICENSE file
+and most of its sources carry no header**, so the grant is the sentence in its
+README, reproduced in `src/apps_local/go/michi/UPSTREAM-README.md`: "Michi-c2 is
+distributed under the MIT licence." This notice is written by hand for that
+reason rather than copied from a file.
+
 **MoGo 3x3 playout patterns**, from Gelly, Wang, Munos and Teytaud (2006), as
 transcribed by Petr Baudis in [michi](https://github.com/pasky/michi) (MIT,
 Copyright (c) 2014 Petr Baudis). Go's opponent compiles them into a 961-byte

@@ -1,12 +1,18 @@
 # Go
 
-Nine by nine, area scoring, komi 7.5, situational superko. Two people on one
-device, two devices in a room, or one person against a machine at three levels.
+Nine by nine or thirteen by thirteen, area scoring, komi 7.5, situational
+superko. Two people on one device, two devices in a room, or one person against
+michi-c2 at three levels.
 
-Nine by nine **only**, and that is a decision rather than a first step.
-Nineteen lines on a 480px panel is a 24px pitch with a 20px stone, which is
-below the fingertip this device is driven with; nine gives 49px and a game that
-finishes on one train journey.
+**Two board sizes and not three.** Nineteen lines on a 480px panel is a 24px
+pitch with a 20px stone, which is below the fingertip this device is driven
+with. Nine gives 49px and a game that finishes on one train journey; thirteen
+gives 33px, and is playable at that pitch because a stone goes down in two taps
+and the first one can be moved. Nine is the default.
+
+Both boards occupy the **same 448px square**, and that is what keeps the seat
+bands, the buttons and the frame in one place across the two: only the pitch and
+the pad inside the square change.
 
 ## The files
 
@@ -17,7 +23,9 @@ host-tested; only the activity needs hardware.
 | --------------- | --------------------------------------------------------- |
 | `GoCore.h/.cpp` | the rules, the position, scoring. No renderer, no heap.   |
 | `GoFlow.h`      | two state machines, the aim, the cautions                 |
-| `GoEngine.h/.cpp` | the opponent: MCTS, the level ladder, dead-stone guessing |
+| `GoEngine.h/.cpp` | playouts, the pass rule, dead-stone guessing               |
+| `GoMichi.h/.cpp` | the bridge to michi-c2, the level ladder, when to pass      |
+| `michi/`        | vendored michi-c2, plain C, behind `MichiBridge.h`          |
 | `GoSave.h/.cpp` | what is written to the card, and what a bad file costs    |
 | `GoScreens.h/.cpp` | every screen, as free functions over plain models      |
 | `GoActivity.h/.cpp` | renderer, input, shelf, link, storage                 |
@@ -26,10 +34,41 @@ host-tested; only the activity needs hardware.
 
 ## The front door has three doors
 
-PLAY, PLAY NEARBY, SETTINGS, and an ornament in the middle that is the final
-position of your last game. Everything configurable is behind the third door:
-six rows on a front door, three of them settings, is a settings screen with a
-PLAY button on it.
+PLAY, PLAY NEARBY, SETTINGS, and the board in the middle. Everything
+configurable is behind the third door: eight rows on a front door, five of them
+settings, is a settings screen with a PLAY button on it.
+
+**The board in the middle is the game you are IN**, drawn small, with the move
+number under it. It falls back to the last finished game when there is none, and
+to nothing at all on a device that has never played. It showed only finished
+games first, which meant the screen a player reaches their half-played game
+through was the one screen that did not show it.
+
+**RESUME is a split row.** The row resumes; a square button on its end with a
+trash mark throws the game away. It is deliberately not confirmed: what is being
+discarded is drawn on the same screen, directly above the finger, which is a
+better guard than a dialog nobody reads. It is absent entirely when there is
+nothing to discard, so a destructive control never exists to be tapped by
+mistake. The square is drawn AFTER the list so it wins the hit test, which runs
+backwards through the interaction table; the row underneath it stays registered
+at full width.
+
+### The five settings
+
+| Row | Values | Notes |
+| --- | --- | --- |
+| OPPONENT | COMPUTER / 2 PLAYERS | who holds the other seat |
+| LEVEL | EASY / MEDIUM / HARD | how hard the machine thinks, and nothing else |
+| HANDICAP | NONE / 2..5 STONES | stones spotted to the player, komi 0.5 |
+| YOU PLAY | BLACK / WHITE | dim while a handicap is set: a handicap is Black's |
+| BOARD | 9x9 / 13x13 | applies to the next NEW game |
+
+**The level is strength alone.** It used to carry the opening as well, so EASY
+meant "a weaker opponent AND two free stones" and neither half could be had
+without the other. Those are three separate decisions and they are three
+separate rows now. Changing any of them drops a game in progress, because most
+of them cannot be applied to a position already under way and a list where one
+row keeps your game and four throw it away is a list nobody can predict.
 
 There is **no how-to**. The board explains itself instead: the status capsule
 names the phase, a stone is aimed before it is placed, and the two warnings
@@ -61,12 +100,22 @@ no draw and needs no draw screen**, and `settlesEveryGame()` holds every komi
 the level ladder can set to that promise. The first version had 7.0 and the
 suite found the tie.
 
-`kMoveLimit` is 400 moves, and it is a **[house rule]**. Chinese rules with full
-superko terminate on their own, but the ring in `Game` remembers
-eight positions rather than every one, so a long enough cycle is not forbidden.
-An opponent that refuses to pass while losing (which is correct, below) will
-happily play into one, and a self-play game ran past four hundred moves during
-testing. A real game is forty to ninety.
+`moveLimit(size)` is five times the board -- 405 moves on nine, 845 on thirteen
+-- and it is a **[house rule]**. Chinese rules with full superko terminate on
+their own, but the ring in `Game` remembers eight positions rather than every
+one, so a long enough cycle is not forbidden. An opponent that refuses to pass
+while losing (which is correct, below) will happily play into one, and a
+self-play game ran past four hundred moves during testing. A real game is forty
+to a hundred and fifty.
+
+**The board is two bits a point.** A hundred and sixty nine points at a byte
+each does not fit the link layer's 192-byte packet beside the superko ring and
+the tallies; packed, the whole game is 116 bytes. That is why nothing indexes
+`game.point[]` any more: it is `game.at(p)` and `game.put(p, c)`, and the
+compiler finds every site that forgot. `game.size` is the board and every loop
+bounds itself with `game.points()` rather than with the array length, because a
+nine by nine game leaves the tail of every array untouched and a loop that reads
+it sees stones that are not there.
 
 ## Four rules and four traps
 
@@ -90,8 +139,9 @@ made fail.
 
 The first tap aims, the second commits, and tapping elsewhere moves the aim.
 It costs one tap on a move you were sure of and saves a game on the one you were
-not: the pitch is 49px, which is under a fingertip, and a stone cannot be taken
-back in a match.
+not: the pitch is 49px on nine and 33px on thirteen, which is at or under a
+fingertip, and a stone cannot be taken back in a match. It is also what makes
+the larger board offerable at all.
 
 The pause is also the only place a warning can live. `go::cautionFor` returns
 `FillsOwnEye` or `SelfAtari` for a move that is legal and almost certainly a
@@ -99,88 +149,127 @@ mistake, and the capsule says so before the stone exists. Without the pause, a
 beginner's commonest way of losing a group they had already won happens in
 silence.
 
-## The opponent
+## The opponent is michi-c2
 
-**Monte Carlo tree search, not alpha-beta.** Go has no usable hand-written
-evaluation function; that is why computer Go was stuck at beginner level for
-thirty years. Playing the position out at random a few thousand times and
-counting who won needs no knowledge, no opening book and no weights, which is
-also why it fits in a device with fifty kilobytes of flash to spare.
+**Vendored, not written.** `src/apps_local/go/michi/` is Denis Blumstein's
+michi-c2, a C recoding of Petr Baudis's michi, under MIT. The research said port
+it; the first version of this app did not, on a flash budget that turned out to
+be wrong, and wrote its own Monte Carlo tree search instead. That engine was two
+or three stones weaker and Mario said so after one game on hardware.
 
-**There are two boards, and that is deliberate.** `go::Game` is the game: a
-superko ring, dead-stone marks, tallies, and a whole board copied to answer one
-question. The search plays on `Fast`, which has none of that. Two
-implementations of one rulebook is exactly the shape that drifts, so
-`testTheFastBoardIsTheSameGame` plays **over a million positions** through both
-and asserts they agree point for point, printing the count it reached, with the single licensed exception that the
-fast board knows simple ko where the game knows superko.
+What crosses the boundary is six functions over integers and byte arrays
+(`MichiBridge.h`). michi's headers do **not** compile as C++ -- they do
+arithmetic on enums and return string literals as `char*` -- so everything on
+its side of that header is C and everything on this side is C++. Patching four
+thousand lines of somebody else's engine to satisfy a compiler it was never
+written for is a sync nobody wants to do twice.
 
-**The playout policy is LOCAL, and that is the whole design.** The first version
-asked every chain on the board whether it was in atari, once per move: correct,
-and fourteen times slower than a uniform playout. At roughly 113 Elo per
-doubling of playouts, that is four ranks handed back to buy one. Go is a local
-game and an atari is caused by the move just played, so only the four points
-around the last move can have started one. The local version runs at 34,000
-playouts a second on a laptop against 58,000 uniform: 1.7x, not 14x.
+**Three fork changes, all marked `FORK CHANGE:` in the source:**
 
-Measured on the same laptop: Medium's 3,000 playouts is 57ms a move. The
-research (below) puts the device at 26x slower, so about 1.5s, and Hard's 8,000
-at about 4s. **Those are scaled, not measured on hardware.**
+- `N` is **13**, not 19. It is the compile-time MAXIMUM; the size actually
+  played is `pos->size`, so one build serves both boards and a nine by nine game
+  sits in a corner of the larger array.
+- `log_fmt_s` tolerates a null sink. michi logs through a `FILE*` that `ui.c`
+  opens, and `ui.c` is not vendored.
+- Every allocation goes through `michi_malloc`/`michi_calloc`, and on ESP32
+  those are `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`. **The search tree lives
+  in PSRAM**: it is hundreds of kilobytes at these simulation counts, internal
+  SRAM does not have that to spare, and the tree is the least cache-sensitive
+  thing in the app. The 3x3 pattern table stays where it was.
 
-### The three levels are three different players
+**Two things michi does are NOT used, and both are measurements rather than
+preferences.**
 
-The measurement that decides this: across the entire playout budget this device
-can reach, strength moves about 113 Elo per doubling, so the whole feasible
-range is **three and a half ranks and it bottoms out in single-digit kyu**.
-Thinking time alone therefore cannot produce a level a beginner can beat.
+- **`compute_all_status` faults on a nearly full board.** Reproduced in forty
+  lines of plain C with no C++ anywhere near it: five empty points is fine,
+  three is a segmentation fault. A counting screen is always a nearly full board
+  -- that is what counting is -- so the one position this app would ask the
+  question in is the one position michi cannot answer it in. Dead stones are
+  `goengine::estimateDead` instead, which is tested and next door. The function
+  that would have called it is deleted rather than left in the bridge.
+- **`is_better_to_pass` is never called**, because it calls the above. It could
+  not fire anyway: it wants the opponent's last move to have been a pass, and
+  the position handed to michi records no moves at all -- the stones are PLACED,
+  not played, because the position is already the result of every capture and ko
+  in the game.
 
-Handicap can. On nine by nine a stone is worth about three ranks among
-single-digit kyu and more below, so two stones is a bigger step than every
-doubling this device can afford put together. Handicap is also the only
-mechanism that **cannot make the opponent look broken**, because it never plays
-a deliberately worse move.
+**Passing is the app's decision, not the engine's.** michi will not pass while
+there is a point left to take, and it is right not to: under area scoring a
+neutral point is worth one. To a person it reads as the machine not knowing the
+game is over. So `gomichi::chooseMove` applies the Leela Zero rule itself, and
+`michi_bridge_genmove` never returns a pass -- when the search likes one it
+hands back its best non-pass child instead, which is what michi's own
+`best_move(tree, except)` is for. Without that, a search at sixty simulations
+ended games this app was winning.
 
-|        | Opening                | Playouts | Blind | Move choice        |
-| ------ | ---------------------- | -------- | ----- | ------------------ |
-| Easy   | you take Black + 2 stones, komi 0.5 | 1,200 | 60% | most visited |
-| Medium | even, komi 7.5         | 3,000    | none  | weighted, floored  |
-| Hard   | even, komi 7.5         | 8,000    | none  | most visited       |
+**The search runs in chunks against a clock.** Upstream's `genmove` runs its
+whole simulation count in one call with no way in or out, which is fine for a
+program with a GTP time control and wrong for a panel somebody is holding.
+`tree_search` accumulates into the tree it is given -- michi itself calls it
+twice on one tree when it wants to think harder -- so the loop stops between
+chunks. The first chunk is eight simulations, and every chunk after it is sized
+to sixty percent of the remaining budget from the rate actually measured, so the
+budget holds on both boards without a constant per board.
 
-- **Easy is blind and spotted.** It searches a random 40% of the board each
-  turn and misses things elsewhere, which is what being a beginner actually is:
-  a beginner does not weigh a capture and decide against it, they do not see it.
-  Every move it plays is still one it thought about, so it never looks insane.
-  The exclusion is floored and overridden for a move that takes two stones or
-  saves one of its own chains, or "blind" becomes "brain-damaged".
-- **Medium is indecisive.** It sees everything and searches properly but picks
-  among the moves it looked hardest at, weighted by how hard, with a floor at
-  half the top move's visits. A club player not concentrating. The floor is what
-  stops "not concentrating" becoming "occasionally insane".
-- **Hard is thorough.** Everything on, most visits wins.
+What is NOT safe is reimplementing `genmove`'s preamble. An earlier version did,
+missed part of it, and produced a tree in which PASS won every playout and every
+real move lost every one: the search was running on a position michi did not
+consider set up. The preamble in the bridge is `genmove`'s, line for line, and
+only the loop is the fork's.
 
-**In a handicap game the weaker player takes Black**, so YOU PLAY is not a
-choice at Easy. That is what a handicap is; the alternative is placing White
-stones and letting Black open, which is not a game anybody plays.
+**`init_large_board()` is called at init** even though large patterns are off.
+`expand()` calls `copy_to_large_board()` unconditionally, and with the
+coordinate map left zeroed that copy writes every point to `large_board[0]` and
+trips its own assert. Upstream initialises it inside `init_large_patterns()`,
+the function that loads two multi-megabyte pattern files this fork does not
+vendor.
 
-**What was deliberately NOT done, and must not be re-added**: blunder
-injection. Making a strong engine occasionally play a move it knows is bad
-produces a player who is excellent and then insane, which reads as a fault
-rather than as a weaker opponent. So does disabling the playout policy: that
-makes the bot alien, not weak. The policy is on at every level.
+### The three levels are one knob
+
+|        | Simulations | Budget | What it is |
+| ------ | ----------- | ------ | ---------- |
+| Easy   | 60          | 1.2s   | a beginner who looks one fight ahead |
+| Medium | 500         | 2.5s   | michi-c2 at roughly GNU Go 3.8 `--level 10` |
+| Hard   | 1,500       | 4.0s   | as hard as five seconds a move allows |
+
+One knob, because the other three -- handicap, komi and colour -- are the
+player's rows now. A level that silently spotted stones made EASY mean two
+things at once and neither could be adjusted.
+
+**Whichever binds first wins.** The count keeps the host tests deterministic:
+they lend no clock at all, so a result does not depend on how fast the machine
+running them happens to be. The clock keeps the device under the five seconds
+Mario set, on both boards -- and thirteen by thirteen is where it matters, since
+the same simulation costs roughly twice as much there.
+
+**What was deliberately NOT done, and must not be re-added**: blunder injection.
+Making a strong engine occasionally play a move it knows is bad produces a
+player who is excellent and then insane, which reads as a fault rather than as a
+weaker opponent. So does disabling the playout policy: that makes the bot alien,
+not weak.
 
 ### It never passes a won game away
 
-The Leela Zero rule: if the search wants to pass, count the board as it stands
-with every stone alive. Pass only if passing wins; otherwise play the best move
-that is not a pass. This stops the two behaviours that make a Go program look
-broken, and it is why the fallbacks in `chooseMove` reach for another legal move
-rather than for a pass.
+The Leela Zero rule, and it has **two halves**:
+
+- the opponent has passed, **and**
+- passing wins the board as it stands with every stone alive.
+
+Both are load-bearing. With only the second, White passes at move two of every
+game: one black stone on an empty board surrounds the whole board under area
+scoring, so "passing wins" is true for Black before anything has happened. The
+third case is a board with nothing left but one's own eyes, where passing is the
+only move whoever is ahead, and `hasUsefulMove` answers it.
 
 Filling the neutral points is **not** stupid, which is the correction worth
 carrying: under area scoring a dame is worth exactly one point. The engine is
 collecting points a territory-trained human was taught are worthless. The fix is
 not to suppress it but to stop playing once the game is decided, which this rule
 does exactly.
+
+`RESIGN_THRES` is set to 0, so michi never resigns. It would have to be reported
+as a pass, which hands the opponent a free move every turn for the rest of a
+lost game. Losing games are played out; when a game is over is the app's call.
 
 ## The endgame is an agreement, not a computation
 
@@ -189,9 +278,21 @@ guessed, territory is shaded, the score is shown with komi. **Nobody is ever
 made to fill dame.**
 
 The guess comes from playing the position out a couple of hundred times and
-asking who owned each point at the end. That is the strong programs' method and
-it reuses machinery that already exists; a hand-written life-and-death analyser
+asking who owned each point at the end -- the OWNER map, not the stones, because
+a dead group is captured during the playout and the points it stood on end
+empty. That is the strong programs' method; a hand-written life-and-death
+analyser
 gets seki and bent-four wrong in ways nobody can debug on a device.
+
+**There are two boards here, and that is deliberate.** `go::Game` is the game:
+a superko ring, dead-stone marks, tallies, a packed position, and a whole board
+copied to answer one question. `GoEngine`'s `Fast` has none of that, because a
+playout plays a hundred moves and the estimator plays two hundred playouts. Two
+implementations of one rulebook is exactly the shape that drifts, so
+`testTheFastBoardIsTheSameGame` plays **over a million positions** through both
+and asserts they agree point for point, printing the count it reached, with the
+single licensed exception that the fast board knows simple ko where the game
+knows superko.
 
 Tapping any group flips it, and the whole group flips, never one stone of it.
 The score moves as you do it. **PLAY ON** puts the stones back for the player
@@ -231,18 +332,11 @@ again and say yes again.
 
 ## How strong it actually is
 
-Measured, on a laptop, alternating colours, Tromp-Taylor scored by a GTP
-referee. Hard, which is 8,000 playouts a move.
-
-| Opponent | Games | Won | Elo |
-| --- | --- | --- | --- |
-| GNU Go 3.8 `--level 1` | 64 | 29 | -33 |
-| GNU Go 3.8 `--level 10` | 64 | 5 | -429 |
-
-So: level with GNU Go at its lowest setting, and well below its highest. For
-scale, michi-c2 at **500** playouts is level with `--level 10`, so there are two
-or three stones still on the table and they are the knowledge this engine does
-not have rather than search it cannot afford.
+michi-c2's own published ladder, which is what the simulation counts are set
+from: **500 playouts is level with GNU Go 3.8 at `--level 10`**, and 1,500 is
+comfortably above it. That is two or three stones stronger than the engine this
+app shipped with first, which measured level with `--level 1` at 8,000 playouts
+of its own.
 
 **Three traps in measuring this, all of which cost a wrong conclusion first:**
 
@@ -261,13 +355,19 @@ not have rather than search it cannot afford.
   signed `char`; building it with `-fsigned-char` fixes it, and that trap
   belongs to this whole generation of 2000s C.
 
-**And one change that measured much worse and was reverted**: a prior favouring
-the middle of the board and penalising the first two lines. It looked obviously
-right, it fixed a visibly bad opening move, and it took the engine from 45% to
-4% against `--level 1`. On nine by nine the edge is where the endgame is
-decided, and telling the search to ignore it permanently is fatal. Two changes
-went in together and only the pair was measured, which is the other half of the
-lesson.
+**And one change that measured much worse and was reverted**, from the engine
+that came before this one: a prior favouring the middle of the board and
+penalising the first two lines. It looked obviously right, it fixed a visibly
+bad opening move, and it took that engine from 45% to 4% against `--level 1`. On
+nine by nine the edge is where the endgame is decided. Two changes went in
+together and only the pair was measured, which is the other half of the lesson.
+
+### The move time is logged, on the device
+
+`LOG_INF("GO", "search: level %d, %ux%u, %u ms of %u, %d of %u sims ...")` after
+every move. It is the one line that turns the budget from a promise into a
+measurement, and it is also the line somebody needs if a move ever takes long
+enough to trip the watchdog. Read it with `tools_local/device/drive.py --ip`.
 
 ## Six things a cold reviewer found
 
@@ -302,17 +402,20 @@ entire board: the playouts were right and the fixture was wrong.
 
 ## What is not done
 
-- **No measurement on hardware.** Every playout rate here is a laptop number
-  scaled by a published CoreMark ratio, and the spread in that estimate is a
-  rank and a half. The first thing to do with a device is time a real move.
-- **Two or three stones short of michi-c2**, which is the engine the research
-  recommended porting. It was not ported because it is 33 to 45KB of flash
-  against roughly 50KB spare on the oldest partition table in the field, where
-  this one is twelve. If the gap matters more than the bytes, that port is the
-  fallback and it is a measured one.
-- **No 3x3 shape patterns in the playouts, no RAVE, no priors.** The research
-  measures these at +512, +250 and +398 Elo respectively on top of what is here,
-  and the pattern table is **961 bytes**, not megabytes. This is the single
-  biggest improvement available and it is the next work.
-- **No resignation.** The engine plays every game to the count.
+- **No 13x13 strength measurement.** The simulation counts come from michi-c2's
+  nine by nine ladder. Thirteen by thirteen is a bigger board for the same
+  search, so every level is weaker there in a way nobody here has quantified.
+  The clock, not the count, is what binds on that board.
+- **A match between two devices set to different boards** settles on the first
+  seat's size as soon as its first move arrives. The size crosses the wire
+  inside the game, and the second seat cannot place anything before that move,
+  so nothing is ever misplaced -- but its empty board does visibly change size
+  once.
+- **michi aborts on a failed allocation.** `michi_malloc` calls `exit()`, which
+  is upstream's behaviour and was not patched. With 8MB of PSRAM and a tree of a
+  few hundred kilobytes it is not a path this app can reach, but it is a path.
+- **No resignation.** The engine plays every game to the count, deliberately.
 - **No board coordinates.** The star points are how you read where you are.
+- **The large 3x3-plus pattern files are not vendored.** They are several
+  megabytes; `large_patterns_loaded` stays 0 and michi falls back to its
+  built-in 3x3 set, which is what the pattern priors here are.

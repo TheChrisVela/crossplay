@@ -274,6 +274,15 @@ go_humans    = users        # two of them, because that is what the row means
 go_colour    = contrast     # a disc half black and half white, which IS the
                             # choice the row offers
 go_level     = gauge        # a dial: HOW HARD, which is what the row asks.
+go_handicap  = circle-plus  # stones ADDED before the game starts, which is what
+                            # a handicap is. `dices` was rejected for reading as
+                            # chance, which a handicap emphatically is not.
+go_board     = grid-3x3     # the board itself, at the one size a 32px mark can
+                            # draw a grid at. The row says 9x9 or 13x13 in
+                            # words; the mark only has to say "the board".
+go_trash     = trash-2      # the square button on the RESUME row. It throws the
+                            # game in progress away, so it is the one destructive
+                            # control in the app and it looks like nothing else.
                             # `signal-low/medium/high` was the first choice --
                             # an icon that grades itself is better than one that
                             # restates its label -- and it had to go: at 32px in

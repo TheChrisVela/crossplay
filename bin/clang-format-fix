@@ -52,6 +52,12 @@ fi
 # lib/zstd/ is the vendored zstd single-file decoder (927 KB of upstream C);
 # formatting it takes longer than CI's step allows and would diverge it from
 # upstream for nothing.
+# src/apps_local/go/michi/ is vendored michi-c2, four thousand lines of somebody
+# else's engine in its own style. Reformatting it would make every future sync a
+# conflict, and the three fork changes in it are marked in comments rather than
+# found by diff. The fork-written files in that directory (MichiBridge, the shim)
+# are excluded with it deliberately: half a directory in a different brace style
+# reads as an accident.
 # Keep the no-match case non-fatal: grep returns 1 when no files match,
 # which is expected when there are no modified C/C++ files.
 set +o pipefail
@@ -62,6 +68,7 @@ git ls-files  --exclude-standard ${GIT_LS_FILES_FLAGS} \
     | grep -v -E '^lib/uzlib/' \
     | grep -v -E '^lib/miniz/third_party/' \
     | grep -v -E '^lib/zstd/' \
+    | grep -v -E '^src/apps_local/go/michi/' \
     | xargs -r "${CLANG_FORMAT_BIN}" -style=file "${CLANG_FORMAT_ACTION[@]}"
 CLANG_FORMAT_STATUS=${PIPESTATUS[6]}
 # Restore strict pipeline failure handling for the rest of the script.

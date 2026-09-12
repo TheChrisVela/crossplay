@@ -20,10 +20,14 @@ enum : fui::ActionId {
   ActionDone = 5,
   ActionResume = 6,
   ActionAccept = 7,
+  // The square button on the end of the RESUME row. Its own action rather than
+  // a second meaning for the row, because it throws a game away and the two
+  // must never be one pixel apart in the table.
+  ActionDiscard = 8,
 };
 
 enum class MenuRow : int { Play = 0, PlayNearby, Settings, Count };
-enum class SettingsRow : int { Opponent = 0, Level, PlayAs, Count };
+enum class SettingsRow : int { Opponent = 0, Level, Handicap, PlayAs, Board, Count };
 
 struct MenuModel {
   const char* nearbyName = nullptr;
@@ -31,10 +35,19 @@ struct MenuModel {
   // A game is part-played and PLAY will resume it rather than start one.
   bool inProgress = false;
 
-  // The record and the last game's final position, for the front door's
-  // ornament. Null until a game has been finished on this device.
+  // The position the front door draws, one byte a point, and the board it is
+  // on. The game IN PROGRESS when there is one, the last game finished when
+  // there is not, and null when neither exists -- which is a device that has
+  // never played. The front door sat empty until the first game was over,
+  // which is exactly backwards: the thing a player most wants to see from here
+  // is the game they are in the middle of.
+  const uint8_t* boardPoints = nullptr;
+  uint8_t boardSize = go::kSmallSize;
+  // How far in the game in progress is. Only read when `inProgress`.
+  int moveNumber = 0;
+
+  // The record and the last finished game's margin, for the caption.
   bool hasHistory = false;
-  const uint8_t* lastPoints = nullptr;
   bool lastWon = false;
   // The margin in half points, so "BY 5.5" is expressible.
   int lastMarginHalves = 0;
@@ -45,14 +58,19 @@ struct MenuModel {
 struct SettingsModel {
   int selected = -1;
   go::Opponent opponent = go::Opponent::Computer;
+  // How hard the computer plays, and NOTHING else. The handicap and the colour
+  // are their own rows below: a level that silently spotted stones made EASY
+  // mean two things at once and neither of them was adjustable.
   go::Level level = go::Level::Medium;
   // Which colour the player takes against the computer. Black moves first and
-  // gives away komi; White takes the komi and moves second. On a nine by nine
+  // gives away komi; White takes the komi and moves second. On these boards
   // that is a real choice rather than a preference.
   uint8_t playAs = go::kBlack;
-  // Stones the chosen level spots the player. Non-zero forces them to Black,
-  // because a handicap is Black's by definition.
+  // Stones the player is spotted, 0 or 2..kMaxHandicap. Non-zero forces them to
+  // Black, because a handicap is Black's by definition.
   int handicap = 0;
+  // The board the next new game is played on.
+  int boardSize = go::kSmallSize;
 };
 
 struct BoardModel {
@@ -85,7 +103,7 @@ struct CountModel {
   // Whose area each point counts as, with the dead stones already lifted.
   // Carried in rather than recomputed, so the number under the board and the
   // marks on it come from one pass.
-  uint8_t owner[go::kPoints] = {};
+  uint8_t owner[go::kMaxPoints] = {};
   int blackHalves = 0;
   int whiteHalves = 0;
   // A link match: both seats have to say yes, and this one already has.
@@ -101,24 +119,29 @@ struct CountModel {
 struct ResultModel {
   go::Game game{};
   uint8_t seat = go::kBlack;
-  uint8_t owner[go::kPoints] = {};
+  uint8_t owner[go::kMaxPoints] = {};
   int blackHalves = 0;
   int whiteHalves = 0;
   const char* opponentName = nullptr;
   bool sharedDevice = false;
 };
 
-// An intersection's centre, and the exact inverse. Eighty-one points against a
-// twenty-four slot interaction buffer, so the board is hit-tested
-// arithmetically from the geometry that drew it rather than registered point by
-// point -- the same discipline chess and checkers use, for the same reason.
+// An intersection's centre, and the exact inverse. Up to a hundred and sixty
+// nine points against a twenty-four slot interaction buffer, so the board is
+// hit-tested arithmetically from the geometry that drew it rather than
+// registered point by point -- the same discipline chess and checkers use, for
+// the same reason.
+//
+// `size` rather than a constant: the two boards fill the SAME square, at 49px
+// a line and 33px a line. Keeping the square fixed is what lets the seat bands,
+// the buttons and the frame stay where they are on both.
 //
 // There is no seat argument and there must not be one: a go board has no near
 // end. Turning it to face whoever is to move would move every stone on screen
 // for no gain, because the position means the same thing from both sides.
-void stoneCentre(const fui::DeviceContext& device, int point, int16_t& cx, int16_t& cy);
-bool pointAt(const fui::DeviceContext& device, int x, int y, int& point);
-int16_t stoneRadius();
+void stoneCentre(const fui::DeviceContext& device, int size, int point, int16_t& cx, int16_t& cy);
+bool pointAt(const fui::DeviceContext& device, int size, int x, int y, int& point);
+int16_t stoneRadius(int size);
 
 void buildMenu(toybox::Screen& screen, const MenuModel& model);
 void buildSettings(toybox::Screen& screen, const SettingsModel& model);

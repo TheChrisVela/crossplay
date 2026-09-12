@@ -40,6 +40,8 @@ class GoActivity final : public linkplay::LinkActivity {
 
  private:
   void beginSoloGame();
+  // Throws the game in progress away, from the trash button on the RESUME row.
+  void discardGame();
   void takeComputerTurn();
   void goTo(go::Screen next);
   void clearAim();
@@ -72,6 +74,14 @@ class GoActivity final : public linkplay::LinkActivity {
   go::Opponent opponent = go::Opponent::Computer;
   go::Level level = go::Level::Medium;
   uint8_t playAs = go::kBlack;
+  // Stones the player is spotted, 0 or 2..kMaxHandicap. Its OWN setting, not a
+  // property of the level: a level that silently spotted stones made "easy"
+  // mean two different things at once.
+  int handicap = 0;
+  // The board the NEXT new game is played on. Not `game.size`, which is the
+  // board the game in progress is already on: changing the setting under a
+  // live game would have to reinterpret its stones.
+  int boardSize = go::kSmallSize;
 
   // Which colour this device plays. Equal to playAs in a solo game against the
   // computer, decided by the coin toss in a match, and meaningless when two
@@ -94,7 +104,7 @@ class GoActivity final : public linkplay::LinkActivity {
   // Whose area each point is, recomputed only when the count changes rather
   // than every paint: the render task must not do a flood fill of the board on
   // every frame.
-  uint8_t owner[go::kPoints] = {};
+  uint8_t owner[go::kMaxPoints] = {};
   int blackHalves = 0;
   int whiteHalves = 0;
 
@@ -108,7 +118,8 @@ class GoActivity final : public linkplay::LinkActivity {
   char theirName[24] = {};
 
   bool hasHistory = false;
-  uint8_t lastPoints[go::kPoints] = {};
+  uint8_t lastPoints[go::kMaxPoints] = {};
+  uint8_t lastSize = go::kSmallSize;
   bool lastWon = false;
   int lastMarginHalves = 0;
   int wins = 0;

@@ -12,6 +12,7 @@
 #include "../ui/ToyboxFonts.h"
 #include "../ui/ToyboxTheme.h"
 #include "GoEngine.h"
+#include "GoMichi.h"
 #include "GoSave.h"
 #include "GoScreens.h"
 
@@ -49,7 +50,7 @@ void GoActivity::onExit() {
 void GoActivity::loadSave() {
 #if defined(ARDUINO_ARCH_ESP32) || defined(SIMULATOR)
   if (!Storage.exists(kSavePath)) return;
-  char buffer[1400] = {};
+  char buffer[1600] = {};
   if (Storage.readFileToBuffer(kSavePath, buffer, sizeof(buffer)) == 0) return;
 
   gosave::Save save;
@@ -62,10 +63,13 @@ void GoActivity::loadSave() {
   hasHistory = save.hasHistory;
   lastWon = save.lastWon;
   lastMarginHalves = save.lastMarginHalves;
-  for (int i = 0; i < go::kPoints; ++i) lastPoints[i] = save.lastPoints[i];
+  for (int i = 0; i < go::kMaxPoints; ++i) lastPoints[i] = save.lastPoints[i];
+  lastSize = save.lastSize;
   opponent = save.opponent;
   level = save.level;
   playAs = save.playAs;
+  handicap = save.handicap >= 2 && save.handicap <= go::kMaxHandicap ? save.handicap : 0;
+  boardSize = save.boardSize == go::kLargeSize ? go::kLargeSize : go::kSmallSize;
   inProgress = save.inProgress;
   if (inProgress) {
     game = save.game;
@@ -89,15 +93,18 @@ void GoActivity::writeSave() {
   save.hasHistory = hasHistory;
   save.lastWon = lastWon;
   save.lastMarginHalves = lastMarginHalves;
-  for (int i = 0; i < go::kPoints; ++i) save.lastPoints[i] = lastPoints[i];
+  for (int i = 0; i < go::kMaxPoints; ++i) save.lastPoints[i] = lastPoints[i];
+  save.lastSize = lastSize;
   save.opponent = opponent;
   save.level = level;
   save.playAs = playAs;
+  save.handicap = handicap;
+  save.boardSize = boardSize;
   save.inProgress = inProgress;
   save.game = game;
   save.seat = seat;
 
-  char line[1400];
+  char line[1600];
   const int bytes = gosave::pack(save, line, sizeof(line));
   if (bytes <= 0) {
     LOG_ERR("GO", "Save line did not fit %d bytes", static_cast<int>(sizeof(line)));
@@ -139,14 +146,12 @@ bool GoActivity::computerToMove() const {
 }
 
 void GoActivity::beginSoloGame() {
-  int handicap = 0;
-  int16_t komi = go::kDefaultKomiHalves;
-  if (opponent == go::Opponent::Computer) goengine::openingFor(level, handicap, komi);
-  go::reset(game, handicap, komi);
-  // In a handicap game the weaker player takes Black -- that is what a handicap
-  // IS, and the alternative is placing White stones and letting Black open,
-  // which is not a game anybody plays. So the colour is not the player's to
-  // choose at a level that spots them stones, and the front door says so.
+  // The handicap is its own setting now, not a property of the level. Komi
+  // follows it, because those two are one decision: a handicap game is played
+  // at half a point, an even one at seven and a half.
+  go::reset(game, boardSize, handicap, go::komiForHandicap(handicap));
+  // A handicap is Black's by definition, so it settles the colour and the
+  // YOU PLAY row goes dim rather than lying.
   seat = opponent != go::Opponent::Computer ? go::kBlack : (handicap > 0 ? go::kBlack : playAs);
   resultRecorded = false;
   inProgress = true;
@@ -154,6 +159,21 @@ void GoActivity::beginSoloGame() {
   clearAim();
   writeSave();
   goTo(go::Screen::Board);
+}
+
+void GoActivity::discardGame() {
+  // The one destructive control in the app, and it is deliberately NOT
+  // confirmed. A game in progress is drawn on the front door right above the
+  // button, so what is being thrown away is on screen while the finger is over
+  // it -- which is a better guard than a dialog nobody reads. What it costs if
+  // it is ever tapped by accident is one game, and PLAY starts another.
+  inProgress = false;
+  thinking = false;
+  resultRecorded = false;
+  clearAim();
+  go::reset(game, boardSize);
+  writeSave();
+  requestUpdate();
 }
 
 void GoActivity::takeComputerTurn() {
@@ -164,7 +184,11 @@ void GoActivity::takeComputerTurn() {
   // device. See the chess note in docs/building-apps.md.
   const go::Game snapshot = game;
   const uint32_t began = millis();
-  const int move = goengine::chooseMove(snapshot, level, seed);
+  // The clock the engine measures itself against. It is lent rather than
+  // called, because GoEngine is freestanding and must stay that way: the host
+  // tests pass none and get a search bounded by playouts alone, which is what
+  // makes them deterministic.
+  const int move = gomichi::chooseMove(snapshot, level, seed, []() -> uint32_t { return millis(); });
   const uint32_t took = millis() - began;
   thinking = false;
 
@@ -173,9 +197,11 @@ void GoActivity::takeComputerTurn() {
   // ratio, and the spread in that estimate is a rank and a half -- so this is
   // the one line that turns an estimate into a fact, and it is also the line
   // somebody needs if a move ever takes long enough to trip the watchdog.
-  LOG_INF("GO", "search: level %d, %u playouts, %u ms (%u moves in)", static_cast<int>(level),
-          static_cast<unsigned>(goengine::settingsFor(level).playouts), static_cast<unsigned>(took),
-          static_cast<unsigned>(game.moveNumber));
+  const gomichi::Settings settings = gomichi::settingsFor(level);
+  LOG_INF("GO", "search: level %d, %ux%u, %u ms of %u, %d of %u sims (move %u)", static_cast<int>(level),
+          static_cast<unsigned>(game.size), static_cast<unsigned>(game.size), static_cast<unsigned>(took),
+          static_cast<unsigned>(settings.budgetMs), gomichi::lastSimulations(),
+          static_cast<unsigned>(settings.simulations), static_cast<unsigned>(game.moveNumber));
   if (!go::play(game, move)) {
     // Belt and braces: chooseMove promises a legal move, and if it ever breaks
     // that promise the game passes rather than freezing on a turn nobody can
@@ -252,7 +278,7 @@ void GoActivity::enterCounting() {
 }
 
 void GoActivity::toggleDeadAt(const int point) {
-  if (!go::isStone(game.point[point])) return;
+  if (!go::isStone(game.at(point))) return;
   // The counting screen has a turn, exactly like the board does. A mark is a
   // state change, so the link refuses to send one out of turn -- and the first
   // version mutated the board first and threw the refusal away, which left one
@@ -263,12 +289,13 @@ void GoActivity::toggleDeadAt(const int point) {
   // A whole group flips, never one stone of it: a group is alive or dead as a
   // unit, and asking a player to tap eleven stones of a dead dragon is asking
   // them to get it wrong.
-  uint8_t stones[(go::kPoints + 7) / 8];
+  uint8_t stones[go::kMaskBytes];
   int size = 0;
   int liberties = 0;
   go::group(game, point, stones, size, liberties);
   const bool nowDead = !go::marked(game.dead, point);
-  for (int p = 0; p < go::kPoints; ++p) {
+  const int points = game.points();
+  for (int p = 0; p < points; ++p) {
     if (!go::marked(stones, p)) continue;
     if (nowDead) {
       go::mark(game.dead, p);
@@ -317,7 +344,12 @@ void GoActivity::recordResult() {
     ++losses;
   }
   lastMarginHalves = blackHalves > whiteHalves ? blackHalves - whiteHalves : whiteHalves - blackHalves;
-  for (int i = 0; i < go::kPoints; ++i) lastPoints[i] = game.point[i];
+  // One byte a point here, unpacked: the front door draws a picture of this and
+  // nothing plays on it.
+  for (int i = 0; i < go::kMaxPoints; ++i) lastPoints[i] = go::kEmpty;
+  const int points = game.points();
+  for (int i = 0; i < points; ++i) lastPoints[i] = game.at(i);
+  lastSize = game.size;
   hasHistory = true;
 }
 
@@ -338,7 +370,11 @@ void GoActivity::onMatchStart(const bool goesFirst) {
   resultRecorded = false;
   thinking = false;
   clearAim();
-  go::reset(game);
+  // On THIS device's board setting. The size crosses the wire inside the game,
+  // so a match between two devices set differently settles on the first seat's
+  // board as soon as its first move arrives -- which is before the second seat
+  // can place anything, because it is not their turn until then.
+  go::reset(game, boardSize);
   goTo(go::Screen::Board);
 }
 
@@ -387,7 +423,7 @@ void GoActivity::onLinkEnded() {
   // length of a match, so nothing has overwritten it.
   clearAim();
   thinking = false;
-  go::reset(game, 0, go::kDefaultKomiHalves);
+  go::reset(game, boardSize, 0, go::kDefaultKomiHalves);
   inProgress = false;
   seat = playAs;
   loadSave();
@@ -459,14 +495,14 @@ void GoActivity::gameLoop() {
   }
   if (!input.touchReleased || !interactionsReady) return;
 
-  // Eighty-one points against a twenty-four slot interaction buffer, so the
-  // board is hit-tested from the geometry that drew it rather than registered
-  // point by point. Tried before the registered controls, because it covers
-  // most of the screen.
+  // Up to a hundred and sixty nine points against a twenty-four slot
+  // interaction buffer, so the board is hit-tested from the geometry that drew
+  // it rather than registered point by point. Tried before the registered
+  // controls, because it covers most of the screen.
   if (screen == go::Screen::Board || screen == go::Screen::Count) {
     const fui::DeviceContext device = toybox::makeTarget(renderer).deviceContext();
     int point = 0;
-    if (goui::pointAt(device, tapX, tapY, point)) {
+    if (goui::pointAt(device, game.size, tapX, tapY, point)) {
       if (!surfaceRevealed()) return;
       if (screen == go::Screen::Count) {
         toggleDeadAt(point);
@@ -509,6 +545,10 @@ void GoActivity::gameLoop() {
       }
       return;
 
+    case goui::ActionDiscard:
+      discardGame();
+      return;
+
     case goui::ActionSettingsRow:
       switch (static_cast<goui::SettingsRow>(event.value)) {
         case goui::SettingsRow::Opponent:
@@ -524,21 +564,25 @@ void GoActivity::gameLoop() {
         case goui::SettingsRow::Level:
           if (opponent != go::Opponent::Computer) return;
           level = go::nextLevel(level);
-          // The level decides the opening -- how many stones and what komi --
-          // so it cannot change under a game in progress without the board and
-          // the menu disagreeing about what is being played.
+          // Strength only, so a game in progress could in principle survive it.
+          // It is dropped anyway, because every other row here drops it and a
+          // list where one row keeps your game and four throw it away is a list
+          // nobody can predict.
           inProgress = false;
           settingsSelected = static_cast<int>(goui::SettingsRow::Level);
           writeSave();
           requestUpdate();
           return;
+        case goui::SettingsRow::Handicap:
+          if (opponent != go::Opponent::Computer) return;
+          handicap = handicap >= go::kMaxHandicap ? 0 : (handicap == 0 ? 2 : handicap + 1);
+          inProgress = false;
+          settingsSelected = static_cast<int>(goui::SettingsRow::Handicap);
+          writeSave();
+          requestUpdate();
+          return;
         case goui::SettingsRow::PlayAs: {
           if (opponent != go::Opponent::Computer) return;
-          int handicap = 0;
-          int16_t komi = go::kDefaultKomiHalves;
-          goengine::openingFor(level, handicap, komi);
-          // Dimmed rather than gone at a level that spots stones, so the row
-          // still says what it would do and the list does not jump.
           if (handicap > 0) return;
           playAs = go::other(playAs);
           inProgress = false;
@@ -547,6 +591,16 @@ void GoActivity::gameLoop() {
           requestUpdate();
           return;
         }
+        case goui::SettingsRow::Board:
+          boardSize = go::nextBoardSize(boardSize);
+          // The board cannot change under a game in progress: its stones are
+          // laid out for the size they were played on. Dropping the resume is
+          // what every other setting here already does.
+          inProgress = false;
+          settingsSelected = static_cast<int>(goui::SettingsRow::Board);
+          writeSave();
+          requestUpdate();
+          return;
         case goui::SettingsRow::Count:
           return;
       }
@@ -650,11 +704,25 @@ void GoActivity::gameRender() {
       model.selected = menuSelected;
       model.inProgress = inProgress && game.stage != static_cast<uint8_t>(go::Stage::Over);
       model.hasHistory = hasHistory;
-      model.lastPoints = lastPoints;
       model.lastWon = lastWon;
       model.lastMarginHalves = lastMarginHalves;
       model.wins = wins;
       model.losses = losses;
+
+      // The GAME IN PROGRESS, or the last one finished. Unpacked here rather
+      // than in the screen, because the screen draws a picture and has no
+      // business knowing how a position is stored.
+      uint8_t doorPoints[go::kMaxPoints] = {};
+      if (model.inProgress) {
+        const int points = game.points();
+        for (int i = 0; i < points; ++i) doorPoints[i] = game.at(i);
+        model.boardPoints = doorPoints;
+        model.boardSize = game.size;
+        model.moveNumber = game.moveNumber;
+      } else if (hasHistory) {
+        model.boardPoints = lastPoints;
+        model.boardSize = lastSize;
+      }
       goui::buildMenu(surface, model);
       break;
     }
@@ -664,12 +732,8 @@ void GoActivity::gameRender() {
       model.opponent = opponent;
       model.level = level;
       model.playAs = playAs;
-      {
-        int handicap = 0;
-        int16_t komi = go::kDefaultKomiHalves;
-        goengine::openingFor(level, handicap, komi);
-        model.handicap = opponent == go::Opponent::Computer ? handicap : 0;
-      }
+      model.handicap = opponent == go::Opponent::Computer ? handicap : 0;
+      model.boardSize = boardSize;
       goui::buildSettings(surface, model);
       break;
     }
@@ -693,7 +757,7 @@ void GoActivity::gameRender() {
       goui::CountModel model;
       model.game = game;
       model.seat = seat;
-      for (int i = 0; i < go::kPoints; ++i) model.owner[i] = owner[i];
+      for (int i = 0; i < go::kMaxPoints; ++i) model.owner[i] = owner[i];
       model.blackHalves = blackHalves;
       model.whiteHalves = whiteHalves;
       model.youAccepted = go::hasAccepted(game, seat);
@@ -707,7 +771,7 @@ void GoActivity::gameRender() {
       goui::ResultModel model;
       model.game = game;
       model.seat = seat;
-      for (int i = 0; i < go::kPoints; ++i) model.owner[i] = owner[i];
+      for (int i = 0; i < go::kMaxPoints; ++i) model.owner[i] = owner[i];
       model.blackHalves = blackHalves;
       model.whiteHalves = whiteHalves;
       player::shortName(inMatch() ? opponentName() : nullptr, theirName, sizeof(theirName));

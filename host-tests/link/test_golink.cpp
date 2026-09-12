@@ -68,7 +68,7 @@ struct Device {
       // A follower that started from a zeroed struct would hold a board with
       // stage 0 and no komi, which reads as a legal game nobody can score.
       seat = play.goesFirst() ? go::kBlack : go::kWhite;
-      go::reset(game, 0, go::kDefaultKomiHalves);
+      go::reset(game, go::kSmallSize, 0, go::kDefaultKomiHalves);
       moves = 0;
       accepted = false;
       marksMade = 0;
@@ -95,14 +95,14 @@ struct Device {
       // The counting phase. Mark one group dead the first time round -- which
       // is what a tap does -- and accept after that.
       if (marksMade == 0) {
-        for (int point = 0; point < go::kPoints; ++point) {
-          if (!go::isStone(game.point[point])) continue;
+        for (int point = 0; point < game.points(); ++point) {
+          if (!go::isStone(game.at(point))) continue;
           if (go::marked(game.dead, point)) continue;
-          uint8_t stones[(go::kPoints + 7) / 8];
+          uint8_t stones[go::kMaskBytes];
           int size = 0;
           int liberties = 0;
           go::group(game, point, stones, size, liberties);
-          for (int p = 0; p < go::kPoints; ++p) {
+          for (int p = 0; p < game.points(); ++p) {
             if (go::marked(stones, p)) go::mark(game.dead, p);
           }
           break;
@@ -123,9 +123,9 @@ struct Device {
     if (moves >= moveLimit) {
       if (!go::play(game, go::kPass)) refused = true;
     } else {
-      int candidates[go::kPoints];
+      int candidates[go::kMaxPoints];
       int count = 0;
-      for (int point = 0; point < go::kPoints; ++point) {
+      for (int point = 0; point < game.points(); ++point) {
         if (go::legal(game, point, game.toMove) && !go::isEye(game, point, game.toMove)) candidates[count++] = point;
       }
       if (count == 0) {
@@ -156,10 +156,10 @@ void testTheWholeGameFitsOnePacket() {
 
   go::Game game;
   go::reset(game);
-  CHECK(go::play(game, go::pointAt(4, 4)));
+  CHECK(go::play(game, go::pointAt(go::kSmallSize, 4, 4)));
   go::Game copy;
   std::memcpy(&copy, &game, sizeof(go::Game));
-  for (int i = 0; i < go::kPoints; ++i) CHECK(copy.point[i] == game.point[i]);
+  for (int i = 0; i < game.points(); ++i) CHECK(copy.at(i) == game.at(i));
   CHECK(copy.komiHalves == game.komiHalves);
   CHECK(copy.lastMove == game.lastMove);
 }
@@ -186,7 +186,7 @@ void testAGameOfGoOverAHostileLink() {
   CHECK(a.seat != b.seat);
   // Whole states travel, so the two boards cannot drift: a lost packet is a
   // stale frame the next one corrects, never a divergence.
-  for (int i = 0; i < go::kPoints; ++i) CHECK(a.game.point[i] == b.game.point[i]);
+  for (int i = 0; i < a.game.points(); ++i) CHECK(a.game.at(i) == b.game.at(i));
   CHECK(a.game.toMove == b.game.toMove);
   CHECK(a.game.capturedBy[go::kBlack] == b.game.capturedBy[go::kBlack]);
   CHECK(a.game.capturedBy[go::kWhite] == b.game.capturedBy[go::kWhite]);
@@ -205,7 +205,7 @@ void testAGameOfGoOverAHostileLink() {
   // And the count agrees, which is the whole point of the negotiation: the
   // dead marks crossed the wire with the position, so neither device is
   // counting a board the other cannot see.
-  for (int i = 0; i < (go::kPoints + 7) / 8; ++i) CHECK(a.game.dead[i] == b.game.dead[i]);
+  for (int i = 0; i < go::kMaskBytes; ++i) CHECK(a.game.dead[i] == b.game.dead[i]);
   const go::Score theirs = go::score(a.game);
   const go::Score ours = go::score(b.game);
   CHECK(theirs.blackHalves == ours.blackHalves);
@@ -232,7 +232,7 @@ void testAMarkOneSideMakesReachesTheOther() {
   run(medium, devices, 40000, 2);
 
   CHECK(a.marksMade + b.marksMade >= 1);
-  for (int i = 0; i < (go::kPoints + 7) / 8; ++i) CHECK(a.game.dead[i] == b.game.dead[i]);
+  for (int i = 0; i < go::kMaskBytes; ++i) CHECK(a.game.dead[i] == b.game.dead[i]);
   // Whoever marked, BOTH ended up with the mark, and neither is still claiming
   // to have accepted a count it has not seen.
   CHECK(a.game.stage == static_cast<uint8_t>(go::Stage::Over));

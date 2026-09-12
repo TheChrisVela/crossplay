@@ -70,7 +70,7 @@ the import lands a real pack instead of failing on an unreachable host.
 | **Forehead**     | Screen against your forehead, the room shouts clues, sixty seconds.          |
 | **Trivia**       | 50,000 questions off 42 years of Jeopardy. Read them out, or play alone.     |
 | **Wavelength**   | A hidden point on a spectrum, one clue, and the whole table arguing.         |
-| **Go**           | Nine by nine, against the device or someone next to you. It counts for you.  |
+| **Go**           | 9x9 or 13x13, against the device or someone next to you. It counts for you.  |
 
 ### Apps
 

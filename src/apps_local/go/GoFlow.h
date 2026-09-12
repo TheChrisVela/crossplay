@@ -24,7 +24,7 @@ namespace go {
 enum class Screen : uint8_t {
   // The top. Back from here leaves the app, and it is the only screen that does.
   Menu,
-  // Everything configurable, off the front door. Three value rows is a busy
+  // Everything configurable, off the front door. Five value rows is a busy
   // front door and a quiet settings screen, not the other way round.
   Settings,
   Board,
@@ -45,6 +45,11 @@ enum class Opponent : uint8_t { Computer, Human };
 // Three levels, and they are three different players rather than one player
 // given more time. See GoEngine.h.
 enum class Level : uint8_t { Easy, Medium, Hard, Count_ };
+
+// The two boards. A setting rather than a constant, and it takes effect on the
+// next NEW game: changing the board under a game in progress would have to
+// either discard it or reinterpret its stones, and both are worse than waiting.
+constexpr int nextBoardSize(const int size) { return size == kSmallSize ? kLargeSize : kSmallSize; }
 
 constexpr Screen back(const Screen screen) {
   switch (screen) {
@@ -151,7 +156,7 @@ constexpr Tap tapMeaning(const Game& game, const int aimed, const int point, con
 enum class Caution : uint8_t { None, FillsOwnEye, SelfAtari };
 
 inline Caution cautionFor(const Game& game, const int point, const uint8_t colour) {
-  if (point < 0 || point >= kPoints) return Caution::None;
+  if (point < 0 || point >= game.points()) return Caution::None;
   if (isEye(game, point, colour)) return Caution::FillsOwnEye;
   if (libertiesAfter(game, point, colour) == 1) return Caution::SelfAtari;
   return Caution::None;
@@ -161,7 +166,8 @@ inline Caution cautionFor(const Game& game, const int point, const uint8_t colou
 // When it has not, passing is the only sensible act and the board says so
 // rather than leaving the player hunting for a point that is not there.
 inline bool hasUsefulMove(const Game& game, const uint8_t colour) {
-  for (int point = 0; point < kPoints; ++point) {
+  const int points = game.points();
+  for (int point = 0; point < points; ++point) {
     if (legal(game, point, colour) && !isEye(game, point, colour)) return true;
   }
   return false;

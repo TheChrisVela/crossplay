@@ -6,8 +6,6 @@
 namespace gosave {
 namespace {
 
-constexpr int kMaskBytes = (go::kPoints + 7) / 8;
-
 int appendInt(char* out, const int capacity, int used, const int value) {
   if (used < 0) return -1;
   const int written = std::snprintf(out + used, static_cast<size_t>(capacity - used), " %d", value);
@@ -21,15 +19,19 @@ int pack(const Save& save, char* out, const int capacity) {
   if (out == nullptr || capacity <= 0) return 0;
   const go::Game& game = save.game;
 
-  int used = std::snprintf(out, static_cast<size_t>(capacity), "%d %d %d %d %d %d %d %d %d %d %d %d", kVersion,
-                           save.wins, save.losses, save.hasHistory ? 1 : 0, save.lastWon ? 1 : 0, save.lastMarginHalves,
-                           static_cast<int>(save.opponent), static_cast<int>(save.level), save.playAs,
-                           save.inProgress ? 1 : 0, save.seat, static_cast<int>(go::kPoints));
+  int used =
+      std::snprintf(out, static_cast<size_t>(capacity), "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d", kVersion,
+                    save.wins, save.losses, save.hasHistory ? 1 : 0, save.lastWon ? 1 : 0, save.lastMarginHalves,
+                    static_cast<int>(save.opponent), static_cast<int>(save.level), save.playAs, save.inProgress ? 1 : 0,
+                    save.seat, static_cast<int>(go::kMaxPoints), save.boardSize, save.lastSize, game.size);
   if (used <= 0 || used >= capacity) return 0;
 
-  for (int i = 0; i < go::kPoints; ++i) used = appendInt(out, capacity, used, save.lastPoints[i]);
-  for (int i = 0; i < go::kPoints; ++i) used = appendInt(out, capacity, used, game.point[i]);
-  for (int i = 0; i < kMaskBytes; ++i) used = appendInt(out, capacity, used, game.dead[i]);
+  // The whole array both times, not this board's points: a nine by nine game
+  // saved over a thirteen by thirteen one would otherwise leave the tail of the
+  // file describing the old board, and a reader has no way to tell.
+  for (int i = 0; i < go::kMaxPoints; ++i) used = appendInt(out, capacity, used, save.lastPoints[i]);
+  for (int i = 0; i < go::kCellBytes; ++i) used = appendInt(out, capacity, used, game.cell[i]);
+  for (int i = 0; i < go::kMaskBytes; ++i) used = appendInt(out, capacity, used, game.dead[i]);
   used = appendInt(out, capacity, used, game.toMove);
   used = appendInt(out, capacity, used, game.ko);
   used = appendInt(out, capacity, used, game.passes);
@@ -39,6 +41,7 @@ int pack(const Save& save, char* out, const int capacity) {
   // Leaving them out cost every resumed game its komi: a 44/37 split, which is
   // an ordinary result, scored W+0.5 as played and B+7.0 after a resume, and
   // komi 0 made the draw this ruleset exists to avoid reachable again.
+  used = appendInt(out, capacity, used, save.handicap);
   used = appendInt(out, capacity, used, game.komiHalves);
   used = appendInt(out, capacity, used, game.handicap);
   used = appendInt(out, capacity, used, game.accepted);
@@ -95,20 +98,27 @@ bool unpack(const char* text, Save& save) {
   parsed.inProgress = take(ok) != 0;
   parsed.seat = static_cast<uint8_t>(take(ok));
   const long points = take(ok);
+  parsed.boardSize = static_cast<int>(take(ok));
+  parsed.lastSize = static_cast<uint8_t>(take(ok));
+  parsed.game.size = static_cast<uint8_t>(take(ok));
   if (!ok) return false;
-  // The board size is written down so a file from a different board cannot be
-  // read as a short one. There will never be a nineteen by nineteen here, and
-  // that is exactly why this costs one integer rather than an argument.
-  if (points != go::kPoints) return false;
+  // How long the arrays are, written down so a file from a build with a
+  // different ceiling cannot be read as a short one. This is the ARRAY length,
+  // not the board: the board is the three numbers just above it.
+  if (points != go::kMaxPoints) return false;
+  if (parsed.boardSize != go::kSmallSize && parsed.boardSize != go::kLargeSize) return false;
+  if (parsed.lastSize != go::kSmallSize && parsed.lastSize != go::kLargeSize) return false;
+  if (parsed.game.size != go::kSmallSize && parsed.game.size != go::kLargeSize) return false;
 
-  for (int i = 0; i < go::kPoints; ++i) parsed.lastPoints[i] = static_cast<uint8_t>(take(ok));
-  for (int i = 0; i < go::kPoints; ++i) parsed.game.point[i] = static_cast<uint8_t>(take(ok));
-  for (int i = 0; i < kMaskBytes; ++i) parsed.game.dead[i] = static_cast<uint8_t>(take(ok));
+  for (int i = 0; i < go::kMaxPoints; ++i) parsed.lastPoints[i] = static_cast<uint8_t>(take(ok));
+  for (int i = 0; i < go::kCellBytes; ++i) parsed.game.cell[i] = static_cast<uint8_t>(take(ok));
+  for (int i = 0; i < go::kMaskBytes; ++i) parsed.game.dead[i] = static_cast<uint8_t>(take(ok));
   parsed.game.toMove = static_cast<uint8_t>(take(ok));
   parsed.game.ko = static_cast<uint8_t>(take(ok));
   parsed.game.passes = static_cast<uint8_t>(take(ok));
   parsed.game.lastMove = static_cast<uint8_t>(take(ok));
   parsed.game.stage = static_cast<uint8_t>(take(ok));
+  parsed.handicap = static_cast<int>(take(ok));
   parsed.game.komiHalves = static_cast<int16_t>(take(ok));
   parsed.game.handicap = static_cast<uint8_t>(take(ok));
   parsed.game.accepted = static_cast<uint8_t>(take(ok));

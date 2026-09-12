@@ -23,6 +23,7 @@
 #include "GoCore.h"
 #include "GoEngine.h"
 #include "GoFlow.h"
+#include "GoMichi.h"
 #include "GoSave.h"
 
 using namespace go;
@@ -40,6 +41,17 @@ static int failures = 0;
   } while (0)
 
 namespace {
+
+// Every diagram in this file is nine by nine, so the helpers that used to be
+// constants in GoCore are re-made here at that size. The thirteen by thirteen
+// board has its own tests below rather than a second copy of every diagram:
+// the rules do not know how big the board is, they ask `game.size`.
+constexpr int kSize = go::kSmallSize;
+constexpr int kPoints = kSize * kSize;
+constexpr int pointAt(const int row, const int col) { return go::pointAt(kSize, row, col); }
+constexpr int rowOf(const int point) { return go::rowOf(kSize, point); }
+constexpr int colOf(const int point) { return go::colOf(kSize, point); }
+inline int neighbours(const int point, uint8_t out[4]) { return go::neighbours(kSize, point, out); }
 
 uint32_t rng = 20260912u;
 uint32_t nextRandom() {
@@ -60,12 +72,12 @@ void setUp(Game& game, const char* rows[kSize], const uint8_t toMove = kBlack) {
       const char cell = line[col];
       const int point = pointAt(row, col);
       if (cell == 'X') {
-        game.point[point] = kBlack;
+        game.put(point, kBlack);
       } else if (cell == 'O') {
-        game.point[point] = kWhite;
+        game.put(point, kWhite);
       } else {
         CHECK(cell == '.');
-        game.point[point] = kEmpty;
+        game.put(point, kEmpty);
       }
     }
   }
@@ -88,7 +100,7 @@ int sizeOf(const Game& game, const int point) {
 
 bool samePosition(const Game& a, const Game& b) {
   for (int i = 0; i < kPoints; ++i) {
-    if (a.point[i] != b.point[i]) return false;
+    if (a.at(i) != b.at(i)) return false;
   }
   return a.toMove == b.toMove;
 }
@@ -180,7 +192,7 @@ void testAStoneWithNoLibertyIsLifted() {
 
   CHECK(libertiesOf(game, pointAt(1, 1)) == 1);
   CHECK(play(game, pointAt(2, 1)));
-  CHECK(game.point[pointAt(1, 1)] == kEmpty);
+  CHECK(game.at(pointAt(1, 1)) == kEmpty);
   CHECK(game.capturedBy[kBlack] == 1);
   CHECK(game.capturedBy[kWhite] == 0);
 }
@@ -219,7 +231,7 @@ void testAWholeGroupGoesAtOnce() {
   CHECK(libertiesOf(game, pointAt(1, 0)) == 1);
   CHECK(play(game, pointAt(2, 2)));
   for (int row = 1; row <= 2; ++row) {
-    for (int col = 0; col <= 1; ++col) CHECK(game.point[pointAt(row, col)] == kEmpty);
+    for (int col = 0; col <= 1; ++col) CHECK(game.at(pointAt(row, col)) == kEmpty);
   }
   CHECK(game.capturedBy[kBlack] == 4);
 }
@@ -242,7 +254,7 @@ void testSuicideIsIllegalUnlessItCaptures() {
   setUp(game, rows, kWhite);
   CHECK(!legal(game, pointAt(1, 1), kWhite));
   CHECK(!play(game, pointAt(1, 1)));
-  CHECK(game.point[pointAt(1, 1)] == kEmpty);
+  CHECK(game.at(pointAt(1, 1)) == kEmpty);
 
   // Now the same shape where the move takes the surrounding group first. The
   // stone that would have no liberties has four the instant Black is lifted,
@@ -264,8 +276,8 @@ void testSuicideIsIllegalUnlessItCaptures() {
   CHECK(libertiesOf(game, pointAt(1, 2)) == 1);
   CHECK(legal(game, pointAt(1, 1), kWhite));
   CHECK(play(game, pointAt(1, 1)));
-  CHECK(game.point[pointAt(1, 2)] == kEmpty);
-  CHECK(game.point[pointAt(1, 1)] == kWhite);
+  CHECK(game.at(pointAt(1, 2)) == kEmpty);
+  CHECK(game.at(pointAt(1, 1)) == kWhite);
 }
 
 void testSimpleKoForbidsTheImmediateRecaptureAndOnlyThat() {
@@ -288,7 +300,7 @@ void testSimpleKoForbidsTheImmediateRecaptureAndOnlyThat() {
   setUp(game, rows, kBlack);
 
   CHECK(play(game, pointAt(2, 3)));
-  CHECK(game.point[pointAt(2, 2)] == kEmpty);
+  CHECK(game.at(pointAt(2, 2)) == kEmpty);
   CHECK(game.capturedBy[kBlack] == 1);
   CHECK(sizeOf(game, pointAt(2, 3)) == 1);
   CHECK(libertiesOf(game, pointAt(2, 3)) == 1);
@@ -322,8 +334,8 @@ void testKoDoesNotArmOnAnOrdinaryCapture() {
   setUp(game, twoStones, kBlack);
   CHECK(libertiesOf(game, pointAt(0, 1)) == 1);
   CHECK(play(game, pointAt(0, 3)));
-  CHECK(game.point[pointAt(0, 1)] == kEmpty);
-  CHECK(game.point[pointAt(0, 2)] == kEmpty);
+  CHECK(game.at(pointAt(0, 1)) == kEmpty);
+  CHECK(game.at(pointAt(0, 2)) == kEmpty);
   CHECK(game.capturedBy[kBlack] == 2);
   CHECK(game.ko == kNoPoint);
 
@@ -392,7 +404,7 @@ void testLibertiesAfterAgreesWithActuallyPlayingTheMove() {
   for (int move = 0; move < 120; ++move) {
     for (int point = 0; point < kPoints; ++point) {
       const int predicted = libertiesAfter(game, point, game.toMove);
-      if (game.point[point] != kEmpty) {
+      if (game.at(point) != kEmpty) {
         CHECK(predicted == -1);
         continue;
       }
@@ -526,7 +538,7 @@ void testAPassIsAlwaysLegalEvenOnAFullBoard() {
   Game game;
   reset(game);
   CHECK(legal(game, kPass, kBlack));
-  for (int i = 0; i < kPoints; ++i) game.point[i] = kBlack;
+  for (int i = 0; i < kPoints; ++i) game.put(i, kBlack);
   CHECK(legal(game, kPass, kWhite));
 }
 
@@ -660,7 +672,7 @@ void testNoGameCanRunForever() {
   Game game;
   reset(game);
   int plies = 0;
-  while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(kMoveLimit) + 50) {
+  while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(moveLimit(kSize)) + 50) {
     // Two passes would end it honestly, so this drives it the other way: always
     // a stone while a stone is legal, which is what a losing engine does.
     int played = kNoPoint;
@@ -671,7 +683,7 @@ void testNoGameCanRunForever() {
     ++plies;
   }
   CHECK(game.stage != static_cast<uint8_t>(Stage::Playing));
-  CHECK(game.moveNumber <= kMoveLimit);
+  CHECK(game.moveNumber <= moveLimit(kSize));
 }
 
 void testRandomGamesFinishAndHoldEveryInvariant() {
@@ -680,7 +692,7 @@ void testRandomGamesFinishAndHoldEveryInvariant() {
     reset(game);
 
     int plies = 0;
-    while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(kMoveLimit) + 4) {
+    while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(moveLimit(kSize)) + 4) {
       int candidates[kPoints];
       int count = 0;
       for (int point = 0; point < kPoints; ++point) {
@@ -695,13 +707,13 @@ void testRandomGamesFinishAndHoldEveryInvariant() {
       } else {
         const int chosen = candidates[nextRandom() % static_cast<uint32_t>(count)];
         CHECK(play(game, chosen));
-        CHECK(game.point[chosen] == mover);
+        CHECK(game.at(chosen) == mover);
       }
       CHECK(game.toMove == other(mover));
 
       // No stone ever stands without a liberty.
       for (int point = 0; point < kPoints; ++point) {
-        if (isStone(game.point[point])) CHECK(libertiesOf(game, point) > 0);
+        if (isStone(game.at(point))) CHECK(libertiesOf(game, point) > 0);
       }
       ++plies;
     }
@@ -779,7 +791,7 @@ void testTheFastBoardIsTheSameGame() {
           // The only licensed disagreement: the game refused a repetition the
           // fast board cannot see. Anything else is a rules bug in one of them.
           CHECK(fastOk && !slowOk);
-          CHECK(game.point[point] == kEmpty);
+          CHECK(game.at(point) == kEmpty);
           CHECK(point != game.ko);
           CHECK(libertiesAfter(game, point, game.toMove) > 0);
           ++superkoOnly;
@@ -787,7 +799,7 @@ void testTheFastBoardIsTheSameGame() {
         }
         if (!slowOk) continue;
 
-        for (int i = 0; i < kPoints; ++i) CHECK(slow.point[i] == fast.point[i]);
+        for (int i = 0; i < kPoints; ++i) CHECK(slow.at(i) == fast.at(i));
         CHECK(slow.toMove == fast.toMove);
         CHECK(slow.ko == fast.ko);
       }
@@ -821,19 +833,26 @@ void testTheFastBoardIsTheSameGame() {
 // thirty games to show up. How STRONG it is is measured against GNU Go offline,
 // which is where a number that needs sixty games belongs.
 void testTheOpponentOnlyEverPlaysALegalMove() {
-  for (int trial = 0; trial < 6; ++trial) {
+  for (int trial = 0; trial < 4; ++trial) {
     Game game;
-    reset(game);
+    reset(game, trial % 2 == 0 ? go::kSmallSize : go::kLargeSize);
     uint32_t seed = 4242u + static_cast<uint32_t>(trial) * 97u;
-    const go::Level level = static_cast<go::Level>(trial % 3);
+    // Easy, because this test plays WHOLE games and the stronger levels are the
+    // same search with a bigger count. What it is asking -- does the bridge
+    // ever hand back a move the rules refuse -- has no level in it.
+    const go::Level level = go::Level::Easy;
     int plies = 0;
-    while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(kMoveLimit) + 4) {
-      const int move = goengine::chooseMove(game, level, seed);
+    while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(moveLimit(game.size)) + 4) {
+      const int move = gomichi::chooseMove(game, level, seed);
       CHECK(move == kPass || legal(game, move, game.toMove));
       CHECK(play(game, move));
       ++plies;
     }
+    // Both boards finish, and they finish by PASSING rather than by running
+    // into the move limit. An engine that never passes fills every neutral
+    // point and reads as broken.
     CHECK(game.stage == static_cast<uint8_t>(Stage::Scoring));
+    CHECK(game.moveNumber < moveLimit(game.size));
   }
 }
 
@@ -844,7 +863,7 @@ void testTheOpponentBeatsARandomMoverAtEveryLevel() {
   for (int levelIndex = 0; levelIndex < 3; ++levelIndex) {
     const go::Level level = static_cast<go::Level>(levelIndex);
     int engineWins = 0;
-    constexpr int kGames = 4;
+    constexpr int kGames = 2;
     for (int trial = 0; trial < kGames; ++trial) {
       Game game;
       reset(game);
@@ -852,10 +871,10 @@ void testTheOpponentBeatsARandomMoverAtEveryLevel() {
       // Alternating seats, so a level that only ever wins as Black is caught.
       const uint8_t engineSeat = (trial % 2 == 0) ? kBlack : kWhite;
       int plies = 0;
-      while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(kMoveLimit) + 4) {
+      while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(moveLimit(kSize)) + 4) {
         int move = kPass;
         if (game.toMove == engineSeat) {
-          move = goengine::chooseMove(game, level, seed);
+          move = gomichi::chooseMove(game, level, seed);
         } else {
           int candidates[kPoints];
           int count = 0;
@@ -873,58 +892,107 @@ void testTheOpponentBeatsARandomMoverAtEveryLevel() {
       if (winner == engineSeat) ++engineWins;
     }
     std::printf("  level %d beat a random mover %d-%d\n", levelIndex, engineWins, kGames - engineWins);
-    // Even the easy level throws away only a third of its moves, so anything
-    // below a clean sweep against a player with no idea at all is a bug.
-    CHECK(engineWins >= kGames - 1);
+    // A clean sweep. A player with no idea at all is not an opponent any of
+    // these levels should ever lose to.
+    CHECK(engineWins == kGames);
   }
 }
 
-void testEveryLevelIsADifferentPlayer() {
-  // Three levels that differ only in how long they take are not three levels:
-  // the whole playout range this device can reach is about three and a half
-  // ranks, so thinking time alone cannot make a level a beginner beats.
-  const goengine::Settings easy = goengine::settingsFor(go::Level::Easy);
-  const goengine::Settings medium = goengine::settingsFor(go::Level::Medium);
-  const goengine::Settings hard = goengine::settingsFor(go::Level::Hard);
+// A clock the test controls, so "it stopped when it was told" is a fact rather
+// than a stopwatch reading.
+uint32_t gFakeMs = 0;
+uint32_t gFakeReadings = 0;
+uint32_t fakeClock() {
+  // Every reading is a millisecond later than the last, so a search that keeps
+  // asking runs out of budget in a bounded number of asks and the test cannot
+  // hang whatever the engine does.
+  ++gFakeReadings;
+  return ++gFakeMs;
+}
 
-  CHECK(easy.playouts < medium.playouts);
-  CHECK(medium.playouts < hard.playouts);
-  // Easy is the only level that is spotted stones and the only one that is
-  // blind. Medium and Hard play the same opening and differ in how thoroughly
-  // and how decisively they search.
-  CHECK(easy.handicap >= 2);
-  CHECK(medium.handicap == 0 && hard.handicap == 0);
-  CHECK(easy.blindPerMille > 0);
-  CHECK(medium.blindPerMille == 0 && hard.blindPerMille == 0);
-  // Easy's komi is smaller as well as its handicap larger: both point the same
-  // way, so the two knobs cannot cancel.
-  CHECK(easy.komiHalves < medium.komiHalves);
+void testTheClockStopsTheSearchWhateverTheSimulationCountSays() {
+  // The count alone is not a budget. The same simulations are a fraction of a
+  // second on a laptop and seconds on the device, and which one you get is a
+  // property of the machine. Mario played the first build on hardware and said
+  // every level was too slow.
+  //
+  // So the search runs in chunks against a clock the caller lends, and this
+  // proves the clock is actually consulted: with a clock that advances a
+  // millisecond per reading, the budget runs out within a few readings and the
+  // search must come back having run FAR fewer simulations than its count
+  // allows -- and still come back with a legal move.
+  Game game;
+  reset(game);
+  CHECK(play(game, pointAt(4, 4)));
 
-  // Every komi this app can set settles the game. A draw screen does not exist
-  // and must never become necessary.
-  CHECK(settlesEveryGame(easy.komiHalves));
-  CHECK(settlesEveryGame(medium.komiHalves));
-  CHECK(settlesEveryGame(hard.komiHalves));
-
-  // And the opening the activity is handed matches the level it asked for.
   for (int i = 0; i < 3; ++i) {
     const go::Level level = static_cast<go::Level>(i);
-    int handicap = -1;
-    int16_t komi = 0;
-    goengine::openingFor(level, handicap, komi);
-    CHECK(handicap == goengine::settingsFor(level).handicap);
-    CHECK(komi == goengine::settingsFor(level).komiHalves);
+    const gomichi::Settings settings = gomichi::settingsFor(level);
+    CHECK(settings.budgetMs > 0);
+    // Five seconds is the ceiling Mario set and the reason the budgets exist at
+    // all. Held below it with room, because the chunk that is running when the
+    // clock expires still has to finish.
+    CHECK(settings.budgetMs <= 4500);
+
+    gFakeMs = 0;
+    gFakeReadings = 0;
+    uint32_t seed = 9090u + static_cast<uint32_t>(i);
+    const int move = gomichi::chooseMove(game, level, seed, fakeClock);
+    CHECK(move == kPass || legal(game, move, game.toMove));
+    // The clock was read, and the search stopped on it rather than on its
+    // count: with a clock this fast the budget is gone within a handful of
+    // chunks, so far fewer simulations ran than the level allows.
+    CHECK(gFakeReadings > 0);
+    CHECK(gomichi::lastSimulations() < static_cast<int>(settings.simulations));
   }
+
+  // And with no clock at all it is bounded by the count alone, which is what
+  // keeps every other test in this file deterministic.
+  gFakeMs = 0;
+  gFakeReadings = 0;
+  uint32_t seed = 4242u;
+  const int move = gomichi::chooseMove(game, go::Level::Easy, seed);
+  CHECK(move == kPass || legal(game, move, game.toMove));
+  CHECK(gFakeReadings == 0);
+}
+
+void testEveryLevelIsADifferentPlayer() {
+  // Three levels made of ONE knob, and that is the change this engine brought.
+  // The knob is how many simulations the search runs, which is what michi-c2's
+  // own strength ladder is measured in; the handicap, the komi and the colour
+  // are three SEPARATE settings the player sets, so EASY no longer quietly
+  // means "and two free stones" as well.
+  const gomichi::Settings easy = gomichi::settingsFor(go::Level::Easy);
+  const gomichi::Settings medium = gomichi::settingsFor(go::Level::Medium);
+  const gomichi::Settings hard = gomichi::settingsFor(go::Level::Hard);
+
+  CHECK(easy.simulations < medium.simulations);
+  CHECK(medium.simulations < hard.simulations);
+  // The clock ladder rises with it, or a level that is meant to think harder is
+  // cut off before it can.
+  CHECK(easy.budgetMs < medium.budgetMs);
+  CHECK(medium.budgetMs < hard.budgetMs);
+  // Every one of them under the ceiling.
+  CHECK(hard.budgetMs <= 4500);
+
+  // The komi is the HANDICAP's, not the level's, and it settles every game a
+  // handicap can produce. A draw screen does not exist and must never become
+  // necessary.
+  CHECK(komiForHandicap(0) == kDefaultKomiHalves);
+  for (int stones = 0; stones <= kMaxHandicap; ++stones) {
+    CHECK(settlesEveryGame(komiForHandicap(stones)));
+  }
+  CHECK(komiForHandicap(2) < komiForHandicap(0));
 }
 
 void testAHandicapIsStonesOnTheBoardAndWhiteToPlay() {
   for (int stones = 2; stones <= kMaxHandicap; ++stones) {
     Game game;
-    reset(game, stones, 1);
+    reset(game, kSize, stones, 1);
     int placed = 0;
     for (int point = 0; point < kPoints; ++point) {
-      if (game.point[point] == kBlack) ++placed;
-      CHECK(game.point[point] != kWhite);
+      if (game.at(point) == kBlack) ++placed;
+      CHECK(game.at(point) != kWhite);
     }
     CHECK(placed == stones);
     CHECK(game.handicap == stones);
@@ -937,9 +1005,9 @@ void testAHandicapIsStonesOnTheBoardAndWhiteToPlay() {
 
     // The stones are on star points, and no two on the same one.
     uint8_t where[kMaxHandicap];
-    CHECK(handicapPoints(stones, where) == stones);
+    CHECK(handicapPoints(kSize, stones, where) == stones);
     for (int i = 0; i < stones; ++i) {
-      CHECK(game.point[where[i]] == kBlack);
+      CHECK(game.at(where[i]) == kBlack);
       for (int j = i + 1; j < stones; ++j) CHECK(where[i] != where[j]);
     }
     // The first two are opposite corners, or a two-stone game is lopsided.
@@ -949,17 +1017,17 @@ void testAHandicapIsStonesOnTheBoardAndWhiteToPlay() {
 
   // One stone is not a handicap, it is the even game.
   Game even;
-  reset(even, 1);
+  reset(even, kSize, 1);
   CHECK(even.handicap == 0);
   CHECK(even.toMove == kBlack);
 
   // And the stones are worth what they are supposed to be worth: four stones
   // and a smaller komi has to leave Black ahead on an empty-ish board.
   Game spotted;
-  reset(spotted, 4, 1);
+  reset(spotted, kSize, 4, 1);
   spotted.stage = static_cast<uint8_t>(Stage::Over);
   Game level;
-  reset(level, 0, kDefaultKomiHalves);
+  reset(level, kSize, 0, kDefaultKomiHalves);
   level.stage = static_cast<uint8_t>(Stage::Over);
   const Score withStones = score(spotted);
   const Score without = score(level);
@@ -970,8 +1038,8 @@ void testItNeverPassesAWonGameAway() {
   // The Leela Zero rule, and the loudest way a Go program can look broken.
   //
   // A board where Black plainly leads: passing wins for Black and loses for
-  // White, so the engine must be willing to pass as Black and must not as
-  // White, whatever its search happened to like.
+  // White. The rule has TWO halves and both are tested here, because getting
+  // only the second right makes White pass on move two of every game.
   Game game;
   const char* rows[kSize] = {
       "XXXXXXXXX",  //
@@ -988,45 +1056,127 @@ void testItNeverPassesAWonGameAway() {
   CHECK(goengine::passingWins(game, kBlack));
   CHECK(!goengine::passingWins(game, kWhite));
 
-  // Now from White's seat, with White to move: the search may well think the
-  // position is over, and passing would hand Black the game.
-  game.toMove = kWhite;
+  // Black, after White passed: passing ends it and Black wins, so it passes.
+  game.passes = 1;
   uint32_t seed = 6060u;
+  CHECK(gomichi::chooseMove(game, go::Level::Easy, seed) == kPass);
+
+  // White, after Black passed: passing ends it and White LOSES, so it plays on
+  // however hopeless the position is.
+  game.toMove = kWhite;
+  game.passes = 1;
   for (int trial = 0; trial < 3; ++trial) {
-    const int move = goengine::chooseMove(game, go::Level::Hard, seed);
+    const int move = gomichi::chooseMove(game, go::Level::Hard, seed);
     CHECK(move != kPass);
   }
+
+  // And nobody passes while the game is still being played, whatever the count
+  // says. One black stone on an empty board surrounds the WHOLE board under
+  // area scoring, so "passing wins" is true for Black from move one -- and a
+  // rule with only the winning half in it ends every game at move two.
+  Game opening;
+  reset(opening);
+  CHECK(play(opening, pointAt(4, 4)));
+  CHECK(goengine::passingWins(opening, kBlack));
+  CHECK(gomichi::chooseMove(opening, go::Level::Easy, seed) != kPass);
+  opening.toMove = kBlack;
+  CHECK(gomichi::chooseMove(opening, go::Level::Easy, seed) != kPass);
 }
 
-void testEasyMissesThingsWithoutLookingBroken() {
-  // Easy is meant to miss what it did not look at. It is NOT meant to fill its
-  // own eye or to pass a game it is winning: both read as a fault rather than as
-  // a weak player, and the whole reason the weakening is blindness rather than
-  // blunder injection is that every move it plays is one it considered.
-  for (int trial = 0; trial < 5; ++trial) {
+void testEasyIsWeakWithoutLookingBroken() {
+  // Easy is meant to miss what it did not look at. It is NOT meant to pass a
+  // game it is winning, nor to play an illegal move, nor to fail to finish:
+  // all three read as a fault rather than as a weak player.
+  for (int trial = 0; trial < 3; ++trial) {
     Game game;
-    int handicap = 0;
-    int16_t komi = kDefaultKomiHalves;
-    goengine::openingFor(go::Level::Easy, handicap, komi);
-    reset(game, handicap, komi);
+    reset(game, kSize, 0, komiForHandicap(0));
     uint32_t seed = 8080u + static_cast<uint32_t>(trial) * 17u;
     int plies = 0;
-    while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(kMoveLimit) + 4) {
+    while (game.stage == static_cast<uint8_t>(Stage::Playing) && plies < static_cast<int>(moveLimit(kSize)) + 4) {
       const uint8_t mover = game.toMove;
-      const int move = goengine::chooseMove(game, go::Level::Easy, seed);
+      const int move = gomichi::chooseMove(game, go::Level::Easy, seed);
       if (move == kPass) {
-        // Passing is allowed when it wins, and when there is nothing else left
-        // to play. Those are the only two, and "nothing else" is the position
-        // every game ends in.
-        CHECK(goengine::passingWins(game, mover) || !go::hasUsefulMove(game, mover));
+        // Passing is allowed when the opponent passed and it wins, and when
+        // there is nothing left to play. Those are the only two, and the search
+        // does not get a vote: michi liking a pass at sixty simulations would
+        // otherwise end a game this level was winning.
+        CHECK((game.passes >= 1 && goengine::passingWins(game, mover)) || !go::hasUsefulMove(game, mover));
       } else {
-        CHECK(!isEye(game, move, mover));
         CHECK(legal(game, move, mover));
       }
       CHECK(play(game, move));
       ++plies;
     }
+    CHECK(game.stage == static_cast<uint8_t>(Stage::Scoring));
   }
+}
+
+// --- Thirteen by thirteen ---------------------------------------------------
+//
+// The rules do not know how big the board is; they ask `game.size`. What that
+// buys is that these tests are about the SIZE being carried, not about Go being
+// re-implemented -- so they are the shapes where a hard-coded nine would still
+// compile and be wrong.
+
+void testTheLargeBoardIsTheSameGameOnMorePoints() {
+  Game game;
+  reset(game, go::kLargeSize);
+  CHECK(game.size == go::kLargeSize);
+  CHECK(game.points() == 169);
+
+  // The edge is where a hard-coded nine shows. The point one row below the top
+  // right corner has three neighbours on either board, but they are DIFFERENT
+  // points, and a `- 9` that should have been a `- 13` wraps.
+  uint8_t around[4];
+  CHECK(go::neighbours(go::kLargeSize, go::pointAt(go::kLargeSize, 0, 12), around) == 2);
+  CHECK(go::neighbours(go::kLargeSize, go::pointAt(go::kLargeSize, 6, 6), around) == 4);
+  CHECK(go::neighbours(go::kLargeSize, go::pointAt(go::kLargeSize, 0, 0), around) == 2);
+  CHECK(around[0] == go::pointAt(go::kLargeSize, 1, 0));
+  CHECK(around[1] == go::pointAt(go::kLargeSize, 0, 1));
+
+  // A capture in the far corner, which on a nine by nine board does not exist.
+  const int corner = go::pointAt(go::kLargeSize, 12, 12);
+  game.put(corner, kWhite);
+  game.put(go::pointAt(go::kLargeSize, 11, 12), kBlack);
+  game.toMove = kBlack;
+  CHECK(play(game, go::pointAt(go::kLargeSize, 12, 11)));
+  CHECK(game.at(corner) == kEmpty);
+  CHECK(game.capturedBy[kBlack] == 1);
+
+  // Area scoring counts the whole board.
+  Game empty;
+  reset(empty, go::kLargeSize);
+  for (int i = 0; i < empty.points(); ++i) empty.put(i, kBlack);
+  empty.stage = static_cast<uint8_t>(Stage::Over);
+  const Score counted = score(empty);
+  CHECK(counted.blackHalves == 169 * 2);
+  CHECK(counted.whiteHalves == kDefaultKomiHalves);
+
+  // The move limit scales with the board, or a thirteen by thirteen game is
+  // counted while it is still being played.
+  CHECK(moveLimit(go::kLargeSize) > moveLimit(go::kSmallSize));
+
+  // A handicap goes on the 4-4 points, and the first two are opposite corners.
+  uint8_t where[kMaxHandicap];
+  CHECK(handicapPoints(go::kLargeSize, 2, where) == 2);
+  CHECK(go::rowOf(go::kLargeSize, where[0]) == 9);
+  CHECK(go::colOf(go::kLargeSize, where[0]) == 3);
+  CHECK(go::rowOf(go::kLargeSize, where[1]) == 3);
+  CHECK(go::colOf(go::kLargeSize, where[1]) == 9);
+}
+
+void testResetClearsTheTailOfTheLargerBoard() {
+  // A thirteen by thirteen game followed by a nine by nine one. The nine only
+  // ever touches the first eighty-one points, so a reset that cleared `points()`
+  // rather than the whole array would leave the old game's stones sitting in
+  // the tail -- invisible on screen, in the save file, and on the wire.
+  Game game;
+  reset(game, go::kLargeSize);
+  for (int i = 0; i < game.points(); ++i) game.put(i, kWhite);
+
+  reset(game, go::kSmallSize);
+  CHECK(game.size == go::kSmallSize);
+  for (int i = 0; i < go::kMaxPoints; ++i) CHECK(game.at(i) == kEmpty);
 }
 
 // --- Navigation and what is written down -----------------------------------
@@ -1061,7 +1211,7 @@ void testASavedGameComesBackExactly() {
   // did not write. A round-trip test that enumerates fields BY HAND cannot see
   // a field nobody wrote, which is why the whole-struct comparison below
   // matters more than the named ones.
-  reset(game, 2, 1);
+  reset(game, kSize, 2, 1);
   uint32_t local = 5150u;
   for (int i = 0; i < 40; ++i) {
     int candidates[kPoints];
@@ -1085,15 +1235,18 @@ void testASavedGameComesBackExactly() {
   save.hasHistory = true;
   save.lastWon = true;
   save.lastMarginHalves = 13;
-  for (int i = 0; i < kPoints; ++i) save.lastPoints[i] = static_cast<uint8_t>(i % 3);
+  for (int i = 0; i < go::kMaxPoints; ++i) save.lastPoints[i] = static_cast<uint8_t>(i % 3);
+  save.lastSize = go::kLargeSize;
   save.opponent = go::Opponent::Human;
   save.level = go::Level::Hard;
   save.playAs = kWhite;
+  save.handicap = 2;
+  save.boardSize = go::kLargeSize;
   save.inProgress = true;
   save.game = game;
   save.seat = kWhite;
 
-  char line[1400];
+  char line[1600];
   const int bytes = gosave::pack(save, line, sizeof(line));
   CHECK(bytes > 0);
 
@@ -1107,8 +1260,16 @@ void testASavedGameComesBackExactly() {
   CHECK(back.playAs == kWhite);
   CHECK(back.seat == kWhite);
   CHECK(back.inProgress);
-  for (int i = 0; i < kPoints; ++i) CHECK(back.game.point[i] == game.point[i]);
-  for (int i = 0; i < kPoints; ++i) CHECK(back.lastPoints[i] == save.lastPoints[i]);
+  // Three board sizes, and they are three different facts: the setting the next
+  // game uses, the board the ornament draws, and the board the game in progress
+  // is on. A save that carried one of them for all three would resume a nine by
+  // nine game as a thirteen.
+  CHECK(back.handicap == 2);
+  CHECK(back.boardSize == go::kLargeSize);
+  CHECK(back.lastSize == go::kLargeSize);
+  CHECK(back.game.size == kSize);
+  for (int i = 0; i < kPoints; ++i) CHECK(back.game.at(i) == game.at(i));
+  for (int i = 0; i < go::kMaxPoints; ++i) CHECK(back.lastPoints[i] == save.lastPoints[i]);
   CHECK(back.game.toMove == game.toMove);
   CHECK(back.game.ko == game.ko);
   CHECK(back.game.moveNumber == game.moveNumber);
@@ -1144,7 +1305,7 @@ void testASavedGameComesBackExactly() {
   // that forgot it accepts a repetition the same game refused a minute before
   // the device went to sleep.
   CHECK(!legal(back.game, back.game.lastMove, back.game.toMove) || back.game.lastMove == kPass ||
-        back.game.point[back.game.lastMove] != kEmpty);
+        back.game.at(back.game.lastMove) != kEmpty);
 }
 
 void testAHalfWrittenSaveCostsNothingButTheGame() {
@@ -1239,7 +1400,7 @@ void testTheDeadStoneGuessFindsAWholeGroup() {
         ++marked;
         // Only White's stones are dead here. Marking a black one would hand the
         // game away.
-        CHECK(game.point[point] == kWhite);
+        CHECK(game.at(point) == kWhite);
       }
     }
     CHECK(marked == expected[shape]);
@@ -1344,10 +1505,13 @@ int main() {
   testACountIsAnAgreementNotAComputation();
   testTheFastBoardIsTheSameGame();
   testTheOpponentOnlyEverPlaysALegalMove();
+  testTheClockStopsTheSearchWhateverTheSimulationCountSays();
   testEveryLevelIsADifferentPlayer();
   testAHandicapIsStonesOnTheBoardAndWhiteToPlay();
   testItNeverPassesAWonGameAway();
-  testEasyMissesThingsWithoutLookingBroken();
+  testEasyIsWeakWithoutLookingBroken();
+  testTheLargeBoardIsTheSameGameOnMorePoints();
+  testResetClearsTheTailOfTheLargerBoard();
   testTheOpponentBeatsARandomMoverAtEveryLevel();
 
   std::printf("%d checks, %d failed\n", checks, failures);

@@ -3,14 +3,12 @@
 namespace go {
 namespace {
 
-constexpr int kMaskBytes = (kPoints + 7) / 8;
-
-// A scratch stack for the flood fills. 81 points is the ceiling for every one
-// of them, so nothing here allocates and nothing recurses: a recursive fill on
-// a snake filling the whole board is 81 frames deep on a device whose task
-// stacks are measured in kilobytes.
+// A scratch stack for the flood fills. The whole board is the ceiling for every
+// one of them, so nothing here allocates and nothing recurses: a recursive fill
+// on a snake filling a thirteen by thirteen board is 169 frames deep on a
+// device whose task stacks are measured in kilobytes.
 struct Fill {
-  uint8_t stack[kPoints];
+  uint8_t stack[kMaxPoints];
   int top = 0;
   void push(const int point) { stack[top++] = static_cast<uint8_t>(point); }
   bool empty() const { return top == 0; }
@@ -24,18 +22,19 @@ struct Fill {
 // Returns how many stones were taken.
 int captureAround(Game& game, const int at, const uint8_t colour) {
   uint8_t around[4];
-  const int count = neighbours(at, around);
+  const int count = neighbours(game.size, at, around);
   int taken = 0;
   for (int i = 0; i < count; ++i) {
     const int point = around[i];
-    if (game.point[point] != colour) continue;
+    if (game.at(point) != colour) continue;
     uint8_t stones[kMaskBytes];
     int size = 0;
     int liberties = 0;
     group(game, point, stones, size, liberties);
     if (liberties != 0) continue;
-    for (int p = 0; p < kPoints; ++p) {
-      if (marked(stones, p)) game.point[p] = kEmpty;
+    const int points = game.points();
+    for (int p = 0; p < points; ++p) {
+      if (marked(stones, p)) game.put(p, kEmpty);
     }
     taken += size;
   }
@@ -64,34 +63,45 @@ void rememberPosition(Game& game) {
 
 }  // namespace
 
-int neighbours(const int point, uint8_t out[4]) {
-  const int row = rowOf(point);
-  const int col = colOf(point);
+int neighbours(const int size, const int point, uint8_t out[4]) {
+  const int row = rowOf(size, point);
+  const int col = colOf(size, point);
   int count = 0;
-  if (row > 0) out[count++] = static_cast<uint8_t>(point - kSize);
-  if (row < kSize - 1) out[count++] = static_cast<uint8_t>(point + kSize);
+  if (row > 0) out[count++] = static_cast<uint8_t>(point - size);
+  if (row < size - 1) out[count++] = static_cast<uint8_t>(point + size);
   if (col > 0) out[count++] = static_cast<uint8_t>(point - 1);
-  if (col < kSize - 1) out[count++] = static_cast<uint8_t>(point + 1);
+  if (col < size - 1) out[count++] = static_cast<uint8_t>(point + 1);
   return count;
 }
 
-int handicapPoints(const int handicap, uint8_t out[kMaxHandicap]) {
+int handicapPoints(const int size, const int handicap, uint8_t out[kMaxHandicap]) {
   if (handicap < 2) return 0;
   const int wanted = handicap > kMaxHandicap ? kMaxHandicap : handicap;
-  // Two opposite 3-3s first, then the other two, then the centre. That is the
-  // order every ruleset sets a nine by nine handicap in, and the first two being
-  // opposite corners is what keeps a two-stone game balanced across the board
-  // rather than heavy on one side.
-  static const uint8_t kOrder[kMaxHandicap] = {
-      static_cast<uint8_t>(pointAt(6, 2)), static_cast<uint8_t>(pointAt(2, 6)), static_cast<uint8_t>(pointAt(2, 2)),
-      static_cast<uint8_t>(pointAt(6, 6)), static_cast<uint8_t>(pointAt(4, 4)),
+  // The corner star points, then the centre. Two OPPOSITE corners first, then
+  // the other two: that is the order every ruleset sets a handicap in, and the
+  // first two being opposite is what keeps a two-stone game balanced across the
+  // board rather than heavy on one side.
+  //
+  // Nine takes its stars at the 3-3 points, thirteen at the 4-4s, which is
+  // where each board's stars are drawn.
+  const int near = size == kSmallSize ? 2 : 3;
+  const int far = size - 1 - near;
+  const int middle = size / 2;
+  const uint8_t order[kMaxHandicap] = {
+      static_cast<uint8_t>(pointAt(size, far, near)),      static_cast<uint8_t>(pointAt(size, near, far)),
+      static_cast<uint8_t>(pointAt(size, near, near)),     static_cast<uint8_t>(pointAt(size, far, far)),
+      static_cast<uint8_t>(pointAt(size, middle, middle)),
   };
-  for (int i = 0; i < wanted; ++i) out[i] = kOrder[i];
+  for (int i = 0; i < wanted; ++i) out[i] = order[i];
   return wanted;
 }
 
-void reset(Game& game, const int handicap, const int16_t komiHalves) {
-  for (int i = 0; i < kPoints; ++i) game.point[i] = kEmpty;
+void reset(Game& game, const int size, const int handicap, const int16_t komiHalves) {
+  game.size = static_cast<uint8_t>(size == kLargeSize ? kLargeSize : kSmallSize);
+  // The whole array, not just this board's points: a thirteen by thirteen game
+  // followed by a nine by nine one would otherwise leave stones in the tail,
+  // and the save file carries them.
+  for (int i = 0; i < kCellBytes; ++i) game.cell[i] = 0;
   clearMask(game.dead);
   for (int i = 0; i < kHistory; ++i) game.recent[i] = 0;
   game.capturedBy[0] = 0;
@@ -109,9 +119,9 @@ void reset(Game& game, const int handicap, const int16_t komiHalves) {
   game.accepted = 0;
 
   uint8_t stones[kMaxHandicap];
-  const int placed = handicapPoints(handicap, stones);
+  const int placed = handicapPoints(game.size, handicap, stones);
   if (placed == 0) return;
-  for (int i = 0; i < placed; ++i) game.point[stones[i]] = kBlack;
+  for (int i = 0; i < placed; ++i) game.put(stones[i], kBlack);
   game.handicap = static_cast<uint8_t>(placed);
   // The stones are placed, not played: there is no last move, no capture and no
   // move number, and it is White to play. A handicap where Black also moved
@@ -126,7 +136,7 @@ void group(const Game& game, const int point, uint8_t stones[kMaskBytes], int& s
   size = 0;
   liberties = 0;
 
-  const uint8_t colour = game.point[point];
+  const uint8_t colour = game.at(point);
   if (!isStone(colour)) return;
 
   // Liberties are counted once each, so an empty point touching three stones of
@@ -142,17 +152,18 @@ void group(const Game& game, const int point, uint8_t stones[kMaskBytes], int& s
     const int current = fill.pop();
     ++size;
     uint8_t around[4];
-    const int count = neighbours(current, around);
+    const int count = neighbours(game.size, current, around);
     for (int i = 0; i < count; ++i) {
       const int next = around[i];
-      if (game.point[next] == kEmpty) {
+      const uint8_t there = game.at(next);
+      if (there == kEmpty) {
         if (!marked(counted, next)) {
           mark(counted, next);
           ++liberties;
         }
         continue;
       }
-      if (game.point[next] != colour || marked(seen, next)) continue;
+      if (there != colour || marked(seen, next)) continue;
       mark(seen, next);
       fill.push(next);
     }
@@ -160,11 +171,11 @@ void group(const Game& game, const int point, uint8_t stones[kMaskBytes], int& s
 }
 
 int libertiesAfter(const Game& game, const int point, const uint8_t colour) {
-  if (point < 0 || point >= kPoints) return -1;
-  if (game.point[point] != kEmpty) return -1;
+  if (point < 0 || point >= game.points()) return -1;
+  if (game.at(point) != kEmpty) return -1;
 
   Game after = game;
-  after.point[point] = colour;
+  after.put(point, colour);
   captureAround(after, point, other(colour));
 
   uint8_t stones[kMaskBytes];
@@ -176,15 +187,15 @@ int libertiesAfter(const Game& game, const int point, const uint8_t colour) {
 
 bool legal(const Game& game, const int point, const uint8_t colour) {
   if (point == kPass) return true;
-  if (point < 0 || point >= kPoints) return false;
-  if (game.point[point] != kEmpty) return false;
+  if (point < 0 || point >= game.points()) return false;
+  if (game.at(point) != kEmpty) return false;
   // Simple ko: the point that would immediately undo the last single capture.
   // Superko below catches the rest, but this one is checked first because it is
   // the rule a player actually knows and the cheapest to answer.
   if (point == game.ko) return false;
 
   Game after = game;
-  after.point[point] = colour;
+  after.put(point, colour);
   captureAround(after, point, other(colour));
 
   uint8_t stones[kMaskBytes];
@@ -208,7 +219,8 @@ bool play(Game& game, const int point) {
     game.ko = kNoPoint;
     game.lastMove = kPass;
     ++game.moveNumber;
-    if (++game.passes >= 2 || game.moveNumber >= kMoveLimit) game.stage = static_cast<uint8_t>(Stage::Scoring);
+    if (++game.passes >= 2 || game.moveNumber >= moveLimit(game.size))
+      game.stage = static_cast<uint8_t>(Stage::Scoring);
     return true;
   }
 
@@ -217,7 +229,7 @@ bool play(Game& game, const int point) {
 
   rememberPosition(game);
 
-  game.point[point] = colour;
+  game.put(point, colour);
   const int taken = captureAround(game, point, other(colour));
   game.capturedBy[colour] = static_cast<uint16_t>(game.capturedBy[colour] + taken);
 
@@ -233,9 +245,9 @@ bool play(Game& game, const int point) {
     group(game, point, stones, size, liberties);
     if (size == 1 && liberties == 1) {
       uint8_t around[4];
-      const int count = neighbours(point, around);
+      const int count = neighbours(game.size, point, around);
       for (int i = 0; i < count; ++i) {
-        if (game.point[around[i]] == kEmpty) {
+        if (game.at(around[i]) == kEmpty) {
           game.ko = around[i];
           break;
         }
@@ -247,33 +259,33 @@ bool play(Game& game, const int point) {
   game.passes = 0;
   game.lastMove = static_cast<uint8_t>(point);
   ++game.moveNumber;
-  if (game.moveNumber >= kMoveLimit) game.stage = static_cast<uint8_t>(Stage::Scoring);
+  if (game.moveNumber >= moveLimit(game.size)) game.stage = static_cast<uint8_t>(Stage::Scoring);
   return true;
 }
 
 bool isEye(const Game& game, const int point, const uint8_t colour) {
-  if (point < 0 || point >= kPoints) return false;
-  if (game.point[point] != kEmpty) return false;
+  if (point < 0 || point >= game.points()) return false;
+  if (game.at(point) != kEmpty) return false;
 
   uint8_t around[4];
-  const int count = neighbours(point, around);
+  const int count = neighbours(game.size, point, around);
   for (int i = 0; i < count; ++i) {
-    if (game.point[around[i]] != colour) return false;
+    if (game.at(around[i]) != colour) return false;
   }
 
   // The diagonal test is what separates an eye from a false eye. On an edge or
   // in a corner the opponent needs only one diagonal to break it; in the middle
   // they need two. Without this a playout happily fills a false eye and the
   // group it was pretending to keep alive dies.
-  const int row = rowOf(point);
-  const int col = colOf(point);
+  const int row = game.row(point);
+  const int col = game.col(point);
   int diagonals = 0;
   int hostile = 0;
   for (int dr = -1; dr <= 1; dr += 2) {
     for (int dc = -1; dc <= 1; dc += 2) {
-      if (!onBoard(row + dr, col + dc)) continue;
+      if (!game.on(row + dr, col + dc)) continue;
       ++diagonals;
-      if (game.point[pointAt(row + dr, col + dc)] == other(colour)) ++hostile;
+      if (game.at(game.point(row + dr, col + dc)) == other(colour)) ++hostile;
     }
   }
   const int allowed = diagonals < 4 ? 0 : 1;
@@ -290,8 +302,9 @@ bool isEye(const Game& game, const int point, const uint8_t colour) {
 // implemented.
 uint32_t positionKey(const Game& game) {
   uint32_t hash = 2166136261u;
-  for (int i = 0; i < kPoints; ++i) {
-    hash ^= game.point[i];
+  const int points = game.points();
+  for (int i = 0; i < points; ++i) {
+    hash ^= game.at(i);
     hash *= 16777619u;
   }
   hash ^= game.toMove;
@@ -299,20 +312,21 @@ uint32_t positionKey(const Game& game) {
   return hash;
 }
 
-void territory(const Game& game, uint8_t owner[kPoints]) {
+void territory(const Game& game, uint8_t owner[kMaxPoints]) {
+  const int points = game.points();
   // Dead stones are lifted before anything is counted: under area scoring a
   // dead stone is worth two points to its captor, one for the point it stands
   // on and one for the stone it will become. Treating it as empty and letting
   // the fill reach it does both at once.
-  uint8_t board[kPoints];
-  for (int i = 0; i < kPoints; ++i) {
-    board[i] = marked(game.dead, i) ? kEmpty : game.point[i];
+  uint8_t board[kMaxPoints];
+  for (int i = 0; i < points; ++i) {
+    board[i] = marked(game.dead, i) ? kEmpty : game.at(i);
     owner[i] = board[i];
   }
 
   uint8_t seen[kMaskBytes];
   clearMask(seen);
-  for (int start = 0; start < kPoints; ++start) {
+  for (int start = 0; start < points; ++start) {
     if (board[start] != kEmpty || marked(seen, start)) continue;
 
     // One empty region. It belongs to whichever colour is the only one on its
@@ -329,7 +343,7 @@ void territory(const Game& game, uint8_t owner[kPoints]) {
     while (!fill.empty()) {
       const int current = fill.pop();
       uint8_t around[4];
-      const int count = neighbours(current, around);
+      const int count = neighbours(game.size, current, around);
       for (int i = 0; i < count; ++i) {
         const int next = around[i];
         if (board[next] == kBlack) {
@@ -351,18 +365,19 @@ void territory(const Game& game, uint8_t owner[kPoints]) {
                               : (touchesWhite && !touchesBlack) ? kWhite
                                                                 : kEmpty;
     if (belongsTo == kEmpty) continue;
-    for (int p = 0; p < kPoints; ++p) {
+    for (int p = 0; p < points; ++p) {
       if (marked(region, p)) owner[p] = belongsTo;
     }
   }
 }
 
 Score score(const Game& game) {
-  uint8_t owner[kPoints];
+  uint8_t owner[kMaxPoints];
   territory(game, owner);
 
   Score result{0, 0};
-  for (int i = 0; i < kPoints; ++i) {
+  const int points = game.points();
+  for (int i = 0; i < points; ++i) {
     if (owner[i] == kBlack) result.blackHalves = static_cast<int16_t>(result.blackHalves + 2);
     if (owner[i] == kWhite) result.whiteHalves = static_cast<int16_t>(result.whiteHalves + 2);
   }
