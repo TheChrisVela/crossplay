@@ -22,6 +22,7 @@
 #include "../../src/apps_local/connections/ConnectionsScreens.h"
 #include "../../src/apps_local/dungeon/DungeonScreens.h"
 #include "../../src/apps_local/forehead/ForeheadScreens.h"
+#include "../../src/apps_local/go/GoScreens.h"
 #include "../../src/apps_local/hackernews/HackerNewsScreens.h"
 #include "../../src/apps_local/insider/InsiderScreens.h"
 #include "../../src/apps_local/instapaper/InstapaperScreens.h"
@@ -511,6 +512,18 @@ struct Rendered {
   // sentence that wraps, so the reader tests that only care about the chrome
   // still have a body to draw.
   const char* bodyText = "Some words that go on for a while and wrap onto more than one line of the panel.";
+
+  // Whether the paint registered any control carrying this action. Asking the
+  // TABLE rather than the pixels is what separates "the button is drawn" from
+  // "the button can be tapped", and the trash square on Go's front door is one
+  // control where the two came apart: it is drawn over a list row that was
+  // registered at full width, so the hit test decides which one wins.
+  bool has(const fui::ActionId action) const {
+    for (size_t i = 0; i < interactions.count(); ++i) {
+      if (interactions.data()[i].action == action) return true;
+    }
+    return false;
+  }
 
   // Routes a tap at logical (x, y) against what was just drawn, which is the
   // whole point: the table under test is the one the paint produced.
@@ -5705,6 +5718,237 @@ void testAFullBoardDoesNotOverflowTheInteractionBuffer() {
   Rendered out;
   buildC4<c4ui::BoardModel, c4ui::buildBoard>(out, model);
   CHECK(!out.interactions.overflowed());
+}
+
+// --- go --------------------------------------------------------------------
+
+template <typename Model, void (*Build)(toybox::Screen&, const Model&)>
+void buildGo(Rendered& out, const Model& model) {
+  const fui::InputSnapshot noInput{};
+  toybox::Frame frame(out.target, device(), noInput, out.interactions);
+  toybox::Screen screen(frame, toybox::themeTokens());
+  Build(screen, model);
+}
+
+// The load-bearing one. A hundred and sixty nine points do not fit the
+// interaction table, so the board is hit-tested arithmetically from the
+// geometry that drew it, and the two have to be exact inverses or a tap plays
+// somewhere else.
+//
+// Go's version is harder than a squared board's in one specific way: a point is
+// a CROSSING, and the quadrant around it belongs to it. Computing a small
+// target on each line instead leaves dead gutters between the points, which on
+// a touch board reads as the game ignoring taps.
+//
+// Both boards, because the pitch and the pad differ and a nine by nine number
+// left in a thirteen by thirteen path plays a stone four lines away.
+void testThePointYouTapIsThePointTheRulesGet() {
+  for (const int size : {go::kSmallSize, go::kLargeSize}) {
+    for (int point = 0; point < size * size; ++point) {
+      int16_t cx = 0;
+      int16_t cy = 0;
+      goui::stoneCentre(device(), size, point, cx, cy);
+      int got = -1;
+      CHECK(goui::pointAt(device(), size, cx, cy, got));
+      CHECK(got == point);
+
+      // And the whole quadrant around it, up to but not including the halfway
+      // line to the neighbour.
+      const int16_t reach = static_cast<int16_t>(goui::stoneRadius(size));
+      const int probes[4][2] = {
+          {cx - reach, cy - reach}, {cx + reach, cy - reach}, {cx - reach, cy + reach}, {cx + reach, cy + reach}};
+      for (const auto& probe : probes) {
+        int near = -1;
+        if (!goui::pointAt(device(), size, probe[0], probe[1], near)) continue;
+        CHECK(near == point);
+      }
+    }
+  }
+}
+
+void testTheBoardKeepsOffTheChromeAndTheSeats() {
+  for (const int size : {go::kSmallSize, go::kLargeSize}) {
+    int got = -1;
+    // The header, the seat bands and the PASS row are not the board.
+    CHECK(!goui::pointAt(device(), size, 240, toybox::kHeaderHeight / 2, got));
+    CHECK(!goui::pointAt(device(), size, 240, 800 - toybox::kMargin - toybox::kPillHeight / 2, got));
+
+    int16_t cx = 0;
+    int16_t cy = 0;
+    goui::stoneCentre(device(), size, go::pointAt(size, 0, 0), cx, cy);
+    CHECK(cy - goui::stoneRadius(size) > toybox::kChromeHeight);
+    goui::stoneCentre(device(), size, go::pointAt(size, size - 1, size - 1), cx, cy);
+    CHECK(cy + goui::stoneRadius(size) < 800 - toybox::kMargin - toybox::kPillHeight);
+
+    // Both boards occupy the SAME square, which is what keeps every other
+    // element on the screen in one place across the two.
+    int16_t topLeftX = 0;
+    int16_t topLeftY = 0;
+    int16_t bottomRightX = 0;
+    int16_t bottomRightY = 0;
+    goui::stoneCentre(device(), size, go::pointAt(size, 0, 0), topLeftX, topLeftY);
+    goui::stoneCentre(device(), size, go::pointAt(size, size - 1, size - 1), bottomRightX, bottomRightY);
+    CHECK(bottomRightX - topLeftX == (size == go::kSmallSize ? 49 * 8 : 33 * 12));
+    CHECK(bottomRightY - topLeftY == bottomRightX - topLeftX);
+  }
+}
+
+void testTheBoardSaysWhoseMoveAndWhatIsWrongWithTheMove() {
+  goui::BoardModel model;
+  go::reset(model.game);
+  model.yourTurn = true;
+
+  Rendered mine;
+  buildGo<goui::BoardModel, goui::buildBoard>(mine, model);
+  CHECK(mine.target.drew("PASS"));
+
+  // The two cautions are the whole value of placing a stone in two taps: they
+  // are the only moment a warning can reach the player before the stone exists.
+  model.caution = go::Caution::FillsOwnEye;
+  Rendered eye;
+  buildGo<goui::BoardModel, goui::buildBoard>(eye, model);
+  CHECK(eye.target.drew("THAT FILLS YOUR OWN EYE"));
+
+  model.caution = go::Caution::SelfAtari;
+  Rendered atari;
+  buildGo<goui::BoardModel, goui::buildBoard>(atari, model);
+  CHECK(atari.target.drew("THAT STONE WOULD BE IN ATARI"));
+  CHECK(!atari.target.drew("THAT FILLS YOUR OWN EYE"));
+}
+
+void testTheCountScreenOffersBothWaysOut() {
+  goui::CountModel model;
+  go::reset(model.game);
+  model.game.stage = static_cast<uint8_t>(go::Stage::Scoring);
+  Rendered out;
+  buildGo<goui::CountModel, goui::buildCount>(out, model);
+  // Accepting the count and playing on are BOTH doors, because a player who
+  // passed too early has no other way back and that is the common beginner
+  // mistake.
+  CHECK(out.target.drew("ACCEPT"));
+  CHECK(out.target.drew("PLAY ON"));
+  CHECK(out.target.drew("TAP A DEAD GROUP"));
+}
+
+void testTheResultNamesTheWinnerFromYourSeat() {
+  goui::ResultModel model;
+  go::reset(model.game);
+  model.game.stage = static_cast<uint8_t>(go::Stage::Over);
+  model.seat = go::kBlack;
+  model.blackHalves = 90;
+  model.whiteHalves = 75;
+
+  Rendered won;
+  buildGo<goui::ResultModel, goui::buildResult>(won, model);
+  CHECK(won.target.drew("YOU WIN"));
+
+  model.seat = go::kWhite;
+  Rendered lost;
+  buildGo<goui::ResultModel, goui::buildResult>(lost, model);
+  CHECK(lost.target.drew("THEY WIN"));
+  CHECK(!lost.target.drew("YOU WIN"));
+
+  // Two people sharing one device have no "you", so the headline names the
+  // colour instead. Saying YOU WIN to a pair of players names the wrong one.
+  model.sharedDevice = true;
+  Rendered shared;
+  buildGo<goui::ResultModel, goui::buildResult>(shared, model);
+  CHECK(shared.target.drew("BLACK WINS"));
+  CHECK(!shared.target.drew("YOU WIN"));
+  CHECK(!shared.target.drew("THEY WIN"));
+}
+
+void testTheSettingsRowsSayWhatTheyAre() {
+  goui::SettingsModel model;
+  model.opponent = go::Opponent::Computer;
+  model.level = go::Level::Medium;
+  Rendered computer;
+  buildGo<goui::SettingsModel, goui::buildSettings>(computer, model);
+  CHECK(computer.target.drew("OPPONENT"));
+  CHECK(computer.target.drew("COMPUTER"));
+  CHECK(computer.target.drew("MEDIUM"));
+  CHECK(computer.target.drew("YOU PLAY"));
+  // The handicap and the board are rows of their own. The handicap used to be a
+  // property of the level, so EASY meant "weaker AND two free stones" and
+  // neither half could be had without the other.
+  CHECK(computer.target.drew("HANDICAP"));
+  CHECK(computer.target.drew("NONE"));
+  CHECK(computer.target.drew("BOARD"));
+  CHECK(computer.target.drew("9x9"));
+
+  model.handicap = 3;
+  model.boardSize = go::kLargeSize;
+  Rendered spotted;
+  buildGo<goui::SettingsModel, goui::buildSettings>(spotted, model);
+  CHECK(spotted.target.drew("3 STONES"));
+  CHECK(spotted.target.drew("13x13"));
+  model.handicap = 0;
+  model.boardSize = go::kSmallSize;
+
+  // Two people sharing the device: the machine's rows dim rather than vanish,
+  // so the list does not jump under the finger and the row still says what it
+  // would do.
+  model.opponent = go::Opponent::Human;
+  Rendered humans;
+  buildGo<goui::SettingsModel, goui::buildSettings>(humans, model);
+  CHECK(humans.target.drew("2 PLAYERS"));
+  CHECK(humans.target.drew("LEVEL"));
+  CHECK(humans.target.drew("YOU PLAY"));
+  CHECK(humans.target.drew("HANDICAP"));
+  // The board is the one machine-independent row: two people sharing a device
+  // choose it too.
+  CHECK(humans.target.drew("BOARD"));
+  CHECK(humans.target.drew("9x9"));
+}
+
+void testTheFrontDoorIsThreeDoors() {
+  goui::MenuModel model;
+  Rendered fresh;
+  buildGo<goui::MenuModel, goui::buildMenu>(fresh, model);
+  CHECK(fresh.target.drew("PLAY"));
+  CHECK(fresh.target.drew("PLAY NEARBY"));
+  CHECK(fresh.target.drew("SETTINGS"));
+  CHECK(fresh.target.drew("NO GAMES YET"));
+  // Nothing to throw away yet, so no trash button: a destructive control
+  // offered on a device that has never played is a control that can only be
+  // tapped by mistake.
+  CHECK(!fresh.has(goui::ActionDiscard));
+
+  // A part-played game is RESUMED, not thrown away. Starting a new one from the
+  // front door with no warning is how a player loses the game they left on the
+  // train -- so the row resumes, and a square on its END throws it away.
+  go::Game live;
+  go::reset(live, go::kLargeSize);
+  CHECK(go::play(live, go::pointAt(go::kLargeSize, 6, 6)));
+  uint8_t points[go::kMaxPoints] = {};
+  for (int i = 0; i < live.points(); ++i) points[i] = live.at(i);
+
+  model.inProgress = true;
+  model.boardPoints = points;
+  model.boardSize = live.size;
+  model.moveNumber = live.moveNumber;
+  Rendered resumed;
+  buildGo<goui::MenuModel, goui::buildMenu>(resumed, model);
+  CHECK(resumed.target.drew("RESUME GAME"));
+  CHECK(resumed.has(goui::ActionDiscard));
+  // And the front door shows the game you are IN, not a blank space until the
+  // first one is over.
+  CHECK(resumed.target.drew("IN PROGRESS   13x13   MOVE 1"));
+
+  // With no game running it falls back to the last one finished.
+  goui::MenuModel after;
+  uint8_t finished[go::kMaxPoints] = {};
+  finished[0] = go::kBlack;
+  after.hasHistory = true;
+  after.boardPoints = finished;
+  after.boardSize = go::kSmallSize;
+  after.lastWon = true;
+  after.lastMarginHalves = 11;
+  after.wins = 1;
+  Rendered over;
+  buildGo<goui::MenuModel, goui::buildMenu>(over, after);
+  CHECK(over.target.drew("LAST GAME: WON BY 5.5"));
+  CHECK(!over.has(goui::ActionDiscard));
 }
 
 // --- checkers --------------------------------------------------------------
@@ -12770,6 +13014,13 @@ int main() {
   testTheRackShowsEveryTroopYouHold();
   testTheRackTileYouTapIsTheTroopYouGet();
   testAFullBoardDoesNotOverflowTheInteractionBuffer();
+  testThePointYouTapIsThePointTheRulesGet();
+  testTheBoardKeepsOffTheChromeAndTheSeats();
+  testTheBoardSaysWhoseMoveAndWhatIsWrongWithTheMove();
+  testTheCountScreenOffersBothWaysOut();
+  testTheResultNamesTheWinnerFromYourSeat();
+  testTheSettingsRowsSayWhatTheyAre();
+  testTheFrontDoorIsThreeDoors();
   testTheSquareYouTapIsTheSquareTheRulesGet();
   testTheBoardKeepsOffTheChrome();
   testTheBoardSaysWhoseMoveAndWho();
