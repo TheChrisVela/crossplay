@@ -192,10 +192,22 @@ int michi_bridge_genmove(int size, const uint8_t *board, int toMove, int komiHal
         uint32_t spent = nowMs() - began;
         if (spent >= budgetMs) break;
         if (spent == 0) spent = 1;
-        // Sixty percent of what is left, so a chunk that runs slower than the
-        // measured rate still lands inside the budget rather than through it.
+        // Two caps, and the second is the one that makes this a BOUND rather
+        // than an estimate. Half of what is left, so a chunk that runs slower
+        // than the measured rate still lands inside the budget; and never more
+        // than a quarter second of predicted work, so the clock is consulted
+        // often enough that even a badly wrong rate cannot overshoot by more
+        // than that quarter second times how wrong it was.
+        //
+        // Without the second cap one chunk can be the whole remaining budget,
+        // and a rate measured on the first eight simulations -- an empty tree,
+        // the longest playouts of the move -- is exactly where it would be
+        // wrong. Four seconds plus a whole budget's overshoot is not under
+        // five; four seconds plus a quarter of a second, doubled, is.
         double perMs = (double)done / (double)spent;
-        double afford = perMs * (double)(budgetMs - spent) * 0.6;
+        double half = perMs * (double)(budgetMs - spent) * 0.5;
+        double slice = perMs * 250.0;
+        double afford = half < slice ? half : slice;
         if (afford < 1.0) break;
         chunk = (int)afford;
         if (chunk > 512) chunk = 512;

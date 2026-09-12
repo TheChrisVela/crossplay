@@ -288,6 +288,12 @@ int libertiesAfter(const Game& game, int point, uint8_t colour);
 uint32_t positionKey(const Game& game);
 
 // Bitset helpers for `Game::dead` and the group masks.
+//
+// **Every mask is kMaskBytes long, whatever board is being played.** The array
+// parameter decays to a pointer, so a caller that sizes one for nine by nine
+// compiles and then has eleven bytes of its own stack cleared by clearMask().
+// That happened in a test, and it presented as a compiler bug: identical code,
+// green under clang and red under g++.
 inline bool marked(const uint8_t mask[kMaskBytes], const int point) {
   return (mask[point / 8] & (1u << (point % 8))) != 0;
 }

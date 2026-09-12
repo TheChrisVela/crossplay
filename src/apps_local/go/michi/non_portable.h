@@ -48,7 +48,10 @@
     __INLINE__ int popcnt_u32(unsigned int m32) { return __builtin_popcount(m32);}
     __INLINE__ int bsf_u32(unsigned int m32) { return  __builtin_ctz(m32);}
   #elif __GNUC__
-    #include <x86intrin.h>       // for INTEL SSE intrinsics
+    // FORK CHANGE: no <x86intrin.h>. Upstream includes it here, and the include
+    // is vestigial -- both functions below are GCC builtins and neither needs
+    // it. On the Xtensa cross-compiler that header does not exist at all, so
+    // every device build failed on it before this line went.
     __INLINE__ int popcnt_u32(unsigned int m32) { return __builtin_popcount(m32);}
     __INLINE__ int bsf_u32(unsigned int m32) { return  __builtin_ctz(m32);} 
   #elif  xxxxxxx

@@ -8,12 +8,14 @@
 // a finger has chosen but not yet committed -- which belongs to neither.
 //
 // **A stone goes down in two taps, not one.** Go is played on intersections at
-// a 49px pitch, which is under a fingertip, and a stone cannot be taken back in
-// a match. So the first tap aims and the second commits, and tapping a
-// different point moves the aim rather than playing there. It costs one tap on
-// a move you were sure of and saves a game on the one you were not. Checkers
-// already reads this way (pick, then place) and chess has read this way since
-// it was written, so it is also the gesture this device has taught.
+// a 49px pitch on nine lines and 33px on thirteen, which is at or under a
+// fingertip, and a stone cannot be taken back in a match. So the first tap aims
+// and the second commits, and tapping a different point moves the aim rather
+// than playing there. It costs one tap on a move you were sure of and saves a
+// game on the one you were not -- and it is what makes the larger board
+// offerable at all. Checkers already reads this way (pick, then place) and
+// chess has read this way since it was written, so it is also the gesture this
+// device has taught.
 
 #include <cstdint>
 

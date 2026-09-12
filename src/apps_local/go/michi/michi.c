@@ -80,8 +80,15 @@ Short bibliography
 // Coordinates are just indices in this array.
 //
 // -------------------------------- Global Data -------------------------------
-Mark         *mark1, *mark2, *already_suggested;
-char         buf[BUFLEN];
+// FORK CHANGE: extern, not a second definition. Upstream defines mark1/mark2
+// here AND in board.c, and buf here AND in control.c; both pairs link only
+// because C compilers used to merge tentative definitions by default
+// (-fcommon). GCC 10 turned that off, so every compiler this fork builds with
+// -- the host suite's g++ and the Xtensa cross-compiler -- rejects the
+// duplicates outright. board.c and control.c keep the definitions.
+extern Mark  *mark1, *mark2;
+Mark         *already_suggested;
+extern char  buf[BUFLEN];
 static int   disp_ladder;
 static char* colstr  = "@ABCDEFGHJKLMNOPQRST";
 

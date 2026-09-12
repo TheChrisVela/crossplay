@@ -1391,7 +1391,12 @@ void testTheDeadStoneGuessFindsAWholeGroup() {
     game.stage = static_cast<uint8_t>(Stage::Scoring);
     uint32_t seed = 424242u + static_cast<uint32_t>(shape) * 7919u;
 
-    uint8_t dead[(kPoints + 7) / 8];
+    // go::kMaskBytes, not this board's. Every mask in this app is sized for the
+    // LARGER board and clearMask() clears all of it, so a mask sized for nine
+    // by nine is eleven bytes of somebody else's stack written on every call.
+    // That is what this line was, and it read as a compiler bug: the same code
+    // passed under clang and failed twice under g++.
+    uint8_t dead[go::kMaskBytes];
     goengine::estimateDead(game, seed, dead);
 
     int marked = 0;
@@ -1406,7 +1411,7 @@ void testTheDeadStoneGuessFindsAWholeGroup() {
     CHECK(marked == expected[shape]);
 
     // And the count that follows is the true one: Black holds the whole board.
-    for (int i = 0; i < (kPoints + 7) / 8; ++i) game.dead[i] = dead[i];
+    for (int i = 0; i < go::kMaskBytes; ++i) game.dead[i] = dead[i];
     game.stage = static_cast<uint8_t>(Stage::Over);
     const Score counted = score(game);
     CHECK(counted.blackHalves == kPoints * 2);

@@ -329,7 +329,7 @@ void buildMenu(toybox::Screen& screen, const MenuModel& model) {
   miniBoard(screen, static_cast<int16_t>((device.width - span) / 2), static_cast<int16_t>(top + 12), mini, miniSize,
             model.boardPoints);
 
-  char caption[48];
+  char caption[64];
   if (model.inProgress) {
     std::snprintf(caption, sizeof(caption), "IN PROGRESS   %dx%d   MOVE %d", miniSize, miniSize, model.moveNumber);
   } else {
@@ -376,7 +376,7 @@ void buildSettings(toybox::Screen& screen, const SettingsModel& model) {
   // The handicap is its OWN row, and that is the point of it. It used to be a
   // property of the level, so EASY meant both "a weaker opponent" and "two free
   // stones" and neither could be had without the other.
-  char handicap[16];
+  char handicap[24];
   if (model.handicap > 0) {
     std::snprintf(handicap, sizeof(handicap), "%d STONES", model.handicap);
   } else {
@@ -400,7 +400,7 @@ void buildSettings(toybox::Screen& screen, const SettingsModel& model) {
 
   // The board. Always live, because two people sharing one device choose it
   // too, and it takes effect on the next NEW game rather than under this one.
-  char board[16];
+  char board[24];
   std::snprintf(board, sizeof(board), "%dx%d", model.boardSize, model.boardSize);
   rows[static_cast<int>(SettingsRow::Board)].label = "BOARD";
   rows[static_cast<int>(SettingsRow::Board)].value = board;
