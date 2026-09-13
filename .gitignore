@@ -98,3 +98,4 @@ site/wikipedia/mock/*.zst
 site/wikipedia/mock/*.idx
 site/wikipedia/mock/*.dir
 site/wikipedia/mock/shards/
+.pio-cache/
